@@ -28,19 +28,28 @@ const riskScorer = {
   
   // Transparent scoring: explains why a severity was assigned
   scoreChanges(changes, changeType = 'UNKNOWN') {
+    const core = require('@actions/core');
+    
     const scoringResult = {
       severity: 'low',
       reasoning: [],
       changes: changes
     };
     
+    core.info(`Risk scoring for ${changeType}: ${JSON.stringify(changes)}`);
+    
     // Assess High severity first (most critical)
-    if (this.assessHighSeverity(changeType, changes)) {
+    const isHighSeverity = this.assessHighSeverity(changeType, changes);
+    const isMediumSeverity = this.assessMediumSeverity(changeType, changes);
+    
+    core.info(`High severity check: ${isHighSeverity}, Medium severity check: ${isMediumSeverity}`);
+    
+    if (isHighSeverity) {
       scoringResult.severity = 'high';
       scoringResult.reasoning.push('Contains destructive or breaking operations');
     }
     // Then Medium severity (if not already High)
-    else if (this.assessMediumSeverity(changeType, changes)) {
+    else if (isMediumSeverity) {
       scoringResult.severity = 'medium';
       scoringResult.reasoning.push('Contains potentially breaking or constraining changes');
     }
@@ -50,6 +59,7 @@ const riskScorer = {
       scoringResult.reasoning.push('Contains backward-compatible changes');
     }
     
+    core.info(`Final severity: ${scoringResult.severity}`);
     return scoringResult;
   },
   

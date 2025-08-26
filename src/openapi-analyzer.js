@@ -107,12 +107,14 @@ class OpenApiAnalyzer {
         else if (baseSpec && headSpec) {
           try {
             const diffResult = diff(baseSpec, headSpec);
+            core.info(`OpenAPI diff analysis found ${diffResult ? diffResult.length : 0} changes`);
             
             if (diffResult && diffResult.length > 0) {
               // Analyze diff results for breaking changes
               for (const change of diffResult) {
                 const changeType = change.type || 'unknown';
                 const changePath = change.path || 'unknown';
+                core.info(`OpenAPI change detected: ${changeType} at ${changePath}`);
                 
                 // Classify changes for centralized scoring
                 if (changeType.includes('removed') || changeType.includes('deleted')) {
@@ -127,6 +129,12 @@ class OpenApiAnalyzer {
               // If no changes detected, add generic change indicator
               if (apiChanges.length === 0) {
                 apiChanges.push('OpenAPI specification changes detected');
+              }
+            } else {
+              // No diff results but specs might still be different (fallback)
+              if (baseSpecRaw !== headSpecRaw) {
+                core.info('OpenAPI specs differ but no structured diff found, using fallback detection');
+                apiChanges.push('OpenAPI specification changes detected (fallback detection)');
               }
             }
           } catch (diffError) {

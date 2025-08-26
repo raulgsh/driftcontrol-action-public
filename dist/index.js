@@ -54508,12 +54508,14 @@ class OpenApiAnalyzer {
         else if (baseSpec && headSpec) {
           try {
             const diffResult = diff(baseSpec, headSpec);
+            core.info(`OpenAPI diff analysis found ${diffResult ? diffResult.length : 0} changes`);
             
             if (diffResult && diffResult.length > 0) {
               // Analyze diff results for breaking changes
               for (const change of diffResult) {
                 const changeType = change.type || 'unknown';
                 const changePath = change.path || 'unknown';
+                core.info(`OpenAPI change detected: ${changeType} at ${changePath}`);
                 
                 // Classify changes for centralized scoring
                 if (changeType.includes('removed') || changeType.includes('deleted')) {
@@ -54528,6 +54530,12 @@ class OpenApiAnalyzer {
               // If no changes detected, add generic change indicator
               if (apiChanges.length === 0) {
                 apiChanges.push('OpenAPI specification changes detected');
+              }
+            } else {
+              // No diff results but specs might still be different (fallback)
+              if (baseSpecRaw !== headSpecRaw) {
+                core.info('OpenAPI specs differ but no structured diff found, using fallback detection');
+                apiChanges.push('OpenAPI specification changes detected (fallback detection)');
               }
             }
           } catch (diffError) {
@@ -54573,7 +54581,7 @@ module.exports = OpenApiAnalyzer;
 /***/ }),
 
 /***/ 6019:
-/***/ ((module) => {
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
 // Centralized Risk Scoring Engine (MVP 3-level) - consolidates duplicate logic
 const riskScorer = {
@@ -54605,19 +54613,28 @@ const riskScorer = {
   
   // Transparent scoring: explains why a severity was assigned
   scoreChanges(changes, changeType = 'UNKNOWN') {
+    const core = __nccwpck_require__(7484);
+    
     const scoringResult = {
       severity: 'low',
       reasoning: [],
       changes: changes
     };
     
+    core.info(`Risk scoring for ${changeType}: ${JSON.stringify(changes)}`);
+    
     // Assess High severity first (most critical)
-    if (this.assessHighSeverity(changeType, changes)) {
+    const isHighSeverity = this.assessHighSeverity(changeType, changes);
+    const isMediumSeverity = this.assessMediumSeverity(changeType, changes);
+    
+    core.info(`High severity check: ${isHighSeverity}, Medium severity check: ${isMediumSeverity}`);
+    
+    if (isHighSeverity) {
       scoringResult.severity = 'high';
       scoringResult.reasoning.push('Contains destructive or breaking operations');
     }
     // Then Medium severity (if not already High)
-    else if (this.assessMediumSeverity(changeType, changes)) {
+    else if (isMediumSeverity) {
       scoringResult.severity = 'medium';
       scoringResult.reasoning.push('Contains potentially breaking or constraining changes');
     }
@@ -54627,6 +54644,7 @@ const riskScorer = {
       scoringResult.reasoning.push('Contains backward-compatible changes');
     }
     
+    core.info(`Final severity: ${scoringResult.severity}`);
     return scoringResult;
   },
   
@@ -54667,11 +54685,21 @@ class SqlAnalyzer {
     let hasHighSeverity = false;
     let hasMediumSeverity = false;
 
-    // Process files for drift detection
-    const sqlPattern = new RegExp(sqlGlob.replace('**/', '').replace('*.sql', '\\.sql$'));
+    // Process files for drift detection - convert glob to proper regex
+    // Transform glob patterns like "migrations/**/*.sql" to regex
+    const globRegexPattern = sqlGlob
+      .replace(/\*\*/g, '.*')  // ** matches any path
+      .replace(/\*/g, '[^/]*')  // * matches any filename part
+      .replace(/\./g, '\\.')    // Escape dots
+      + '$';
+    const sqlPattern = new RegExp(globRegexPattern);
     
     // Check for SQL migration files in changed files
     const changedSqlFiles = files.filter(file => sqlPattern.test(file.filename));
+    
+    core.info(`SQL glob pattern: ${sqlGlob} -> regex: ${globRegexPattern}`);
+    core.info(`Files checked: ${files.map(f => f.filename).join(', ')}`);
+    core.info(`Matching SQL files: ${changedSqlFiles.map(f => f.filename).join(', ')}`);
     if (changedSqlFiles.length === 0) {
       return { driftResults, hasHighSeverity, hasMediumSeverity };
     }
@@ -54739,6 +54767,7 @@ class SqlAnalyzer {
         let match;
         while ((match = pattern.exec(content)) !== null) {
           const objectName = match[1];
+          core.info(`Found ${type}: ${objectName} in ${filename}`);
           
           if (type === 'DROP TABLE') {
             droppedTables.add(objectName.toLowerCase());
@@ -54750,6 +54779,7 @@ class SqlAnalyzer {
               const tableName = tableMatch[tableMatch.length - 1].split(/\s+/)[2];
               if (!droppedColumns.has(tableName)) droppedColumns.set(tableName, []);
               droppedColumns.get(tableName).push(objectName);
+              core.info(`Mapped DROP COLUMN ${objectName} to table ${tableName}`);
             }
           }
           

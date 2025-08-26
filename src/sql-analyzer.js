@@ -11,11 +11,21 @@ class SqlAnalyzer {
     let hasHighSeverity = false;
     let hasMediumSeverity = false;
 
-    // Process files for drift detection
-    const sqlPattern = new RegExp(sqlGlob.replace('**/', '').replace('*.sql', '\\.sql$'));
+    // Process files for drift detection - convert glob to proper regex
+    // Transform glob patterns like "migrations/**/*.sql" to regex
+    const globRegexPattern = sqlGlob
+      .replace(/\*\*/g, '.*')  // ** matches any path
+      .replace(/\*/g, '[^/]*')  // * matches any filename part
+      .replace(/\./g, '\\.')    // Escape dots
+      + '$';
+    const sqlPattern = new RegExp(globRegexPattern);
     
     // Check for SQL migration files in changed files
     const changedSqlFiles = files.filter(file => sqlPattern.test(file.filename));
+    
+    core.info(`SQL glob pattern: ${sqlGlob} -> regex: ${globRegexPattern}`);
+    core.info(`Files checked: ${files.map(f => f.filename).join(', ')}`);
+    core.info(`Matching SQL files: ${changedSqlFiles.map(f => f.filename).join(', ')}`);
     if (changedSqlFiles.length === 0) {
       return { driftResults, hasHighSeverity, hasMediumSeverity };
     }
@@ -83,6 +93,7 @@ class SqlAnalyzer {
         let match;
         while ((match = pattern.exec(content)) !== null) {
           const objectName = match[1];
+          core.info(`Found ${type}: ${objectName} in ${filename}`);
           
           if (type === 'DROP TABLE') {
             droppedTables.add(objectName.toLowerCase());
@@ -94,6 +105,7 @@ class SqlAnalyzer {
               const tableName = tableMatch[tableMatch.length - 1].split(/\s+/)[2];
               if (!droppedColumns.has(tableName)) droppedColumns.set(tableName, []);
               droppedColumns.get(tableName).push(objectName);
+              core.info(`Mapped DROP COLUMN ${objectName} to table ${tableName}`);
             }
           }
           
