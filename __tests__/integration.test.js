@@ -589,7 +589,7 @@ describe('Integration Tests', () => {
       const body = commentCall[0].body;
       
       expect(body).toContain('DROP TABLE: legacy_users');
-      expect(body).toContain('Fix suggestion');
+      expect(body).toContain('Explanation');
       expect(body).toContain('Consider backing up data');
     });
   });

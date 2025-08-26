@@ -46,6 +46,22 @@ inputs:
     description: 'Path to feature flags configuration file'
     required: false
     default: ''
+  llm_provider:
+    description: 'LLM provider for enhanced explanations (openai or anthropic)'
+    required: false
+    default: ''
+  llm_api_key:
+    description: 'API key for LLM provider (use GitHub secrets)'
+    required: false
+    default: ''
+  llm_model:
+    description: 'Model to use (gpt-4, gpt-3.5-turbo, claude-3-opus, claude-3-sonnet)'
+    required: false
+    default: ''
+  llm_max_tokens:
+    description: 'Maximum tokens for LLM response'
+    required: false
+    default: '150'
 
 runs:
   using: 'node20'

@@ -15,6 +15,7 @@
 - ⚙️ **Configuration Drift Detection**: Monitors configuration files, Docker Compose, and feature flags for changes
 - 🎯 **Smart Risk Scoring**: Categorizes changes by severity (Low, Medium, High)
 - 💬 **Intelligent PR Comments**: Provides detailed analysis and fix suggestions
+- 🤖 **Optional LLM Integration**: Enhanced plain English explanations with OpenAI or Anthropic
 - ⚙️ **Configurable Policies**: Customize blocking behavior based on risk levels
 - 🔄 **Rename Detection**: Handles file renames intelligently
 - 🛡️ **Override Support**: Emergency bypass with audit trail
@@ -76,6 +77,10 @@ jobs:
 | `config_yaml_glob` | Glob pattern for configuration YAML files | No | - |
 | `feature_flags_path` | Path to feature flags file | No | - |
 | `cost_threshold` | Cost threshold for infrastructure changes | No | - |
+| `llm_provider` | LLM provider (openai or anthropic) | No | - |
+| `llm_api_key` | API key for LLM provider (use secrets) | No | - |
+| `llm_model` | Model name (gpt-4, claude-3-opus, etc) | No | - |
+| `llm_max_tokens` | Max tokens for LLM response | No | `150` |
 | `fail_on_medium` | Block merges on medium-severity drift | No | `false` |
 | `override` | Bypass merge blocks (with audit trail) | No | `false` |
 
@@ -366,6 +371,26 @@ DriftControl provides security-first configuration analysis:
 - **Redacted Sensitive Keys**: Automatically redacts passwords, tokens, API keys
 - **Key-Only Analysis**: Never exposes configuration values, only structure
 - **Feature Flag Tracking**: Monitors feature toggles for unexpected changes
+
+### Enhanced Explanations with LLM
+
+Enable plain English explanations for better understanding:
+
+```yaml
+- name: DriftControl with AI Explanations
+  uses: raulgsh/driftcontrol-action-public@v1
+  with:
+    llm_provider: 'openai'  # or 'anthropic'
+    llm_api_key: ${{ secrets.OPENAI_API_KEY }}
+    llm_model: 'gpt-4'  # or 'gpt-3.5-turbo', 'claude-3-opus', etc.
+    llm_max_tokens: '200'  # Keep explanations concise
+```
+
+Features:
+- **Automatic Fallback**: Uses rule-based explanations if LLM fails
+- **Context-Aware**: Analyzes drift type and severity for relevant explanations
+- **Impact Summaries**: Generates business-focused impact analysis
+- **Security**: API keys only via GitHub secrets, no sensitive data sent to LLMs
 
 ## 🤝 Contributing
 

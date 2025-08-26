@@ -1,5 +1,5 @@
 // Helper function to generate comment body
-async function generateCommentBody(driftResults, isOverride) {
+async function generateCommentBody(driftResults, isOverride, llmConfig = null) {
   const severityEmojis = {
     high: '🔴',
     medium: '🟡', 
@@ -32,6 +32,14 @@ async function generateCommentBody(driftResults, isOverride) {
   if (lowCount > 0) comment += `- ${severityEmojis.low} ${lowCount} Low severity\n`;
   comment += '\n';
   
+  // Add LLM-generated impact summary if available
+  if (llmConfig && llmConfig.enabled) {
+    const impactSummary = await generateImpactSummary(driftResults, llmConfig);
+    if (impactSummary) {
+      comment += `**📊 Impact Analysis**:\n${impactSummary}\n\n`;
+    }
+  }
+  
   // Add detailed results with collapsible sections for readability
   for (const severity of ['high', 'medium', 'low']) {
     const results = groupedResults[severity];
@@ -62,10 +70,10 @@ async function generateCommentBody(driftResults, isOverride) {
       for (const change of result.changes) {
         comment += `- ${change}\n`;
         
-        // Add rule-based fix suggestions based on change patterns
-        const fixSuggestion = generateFixSuggestion(change, result.type, result.severity);
+        // Add rule-based or LLM-enhanced fix suggestions based on change patterns
+        const fixSuggestion = await generateFixSuggestion(change, result.type, result.severity, llmConfig);
         if (fixSuggestion) {
-          comment += `  💡 **Fix suggestion**: ${fixSuggestion}\n`;
+          comment += `  💡 **Explanation**: ${fixSuggestion}\n`;
         }
       }
       
@@ -100,8 +108,17 @@ async function generateCommentBody(driftResults, isOverride) {
   return comment;
 }
 
-// Rule-based fix suggestion generator
-function generateFixSuggestion(change, driftType, severity) {
+// Rule-based fix suggestion generator with optional LLM enhancement
+async function generateFixSuggestion(change, driftType, severity, llmConfig = null) {
+  // Try LLM enhancement first if configured
+  if (llmConfig && llmConfig.enabled) {
+    const llmExplanation = await getLLMExplanation(change, driftType, severity, llmConfig);
+    if (llmExplanation) {
+      return llmExplanation;
+    }
+  }
+  
+  // Fall back to rule-based suggestions
   if (!change) {
     // Handle null/empty change string - return generic suggestion
     if (severity === 'high') {
@@ -205,7 +222,153 @@ function generateFixSuggestion(change, driftType, severity) {
   return null; // No specific suggestion
 }
 
+// Generate LLM-enhanced explanation
+async function getLLMExplanation(change, driftType, severity, llmConfig) {
+  try {
+    const prompt = buildExplanationPrompt(change, driftType, severity);
+    
+    if (llmConfig.provider === 'openai') {
+      return await getOpenAIExplanation(prompt, llmConfig);
+    } else if (llmConfig.provider === 'anthropic') {
+      return await getAnthropicExplanation(prompt, llmConfig);
+    }
+  } catch (error) {
+    // Silently fall back to rule-based
+    return null;
+  }
+}
+
+// Build concise prompt for LLM
+function buildExplanationPrompt(change, driftType, severity) {
+  return `Explain this ${driftType} drift in plain English (max 2 sentences):
+Change: ${change}
+Severity: ${severity}
+Provide a concise explanation and actionable fix suggestion.`;
+}
+
+// OpenAI API integration
+async function getOpenAIExplanation(prompt, llmConfig) {
+  try {
+    const https = require('https');
+    const data = JSON.stringify({
+      model: llmConfig.model || 'gpt-3.5-turbo',
+      messages: [
+        { role: 'system', content: 'You are a DevOps expert providing concise drift analysis explanations.' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: llmConfig.maxTokens || 150,
+      temperature: 0.3
+    });
+    
+    return new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: 'api.openai.com',
+        path: '/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${llmConfig.apiKey}`
+        }
+      }, (res) => {
+        let responseData = '';
+        res.on('data', (chunk) => responseData += chunk);
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(responseData);
+            resolve(parsed.choices?.[0]?.message?.content || null);
+          } catch {
+            resolve(null);
+          }
+        });
+      });
+      
+      req.on('error', () => resolve(null));
+      req.write(data);
+      req.end();
+    });
+  } catch {
+    return null;
+  }
+}
+
+// Anthropic API integration
+async function getAnthropicExplanation(prompt, llmConfig) {
+  try {
+    const https = require('https');
+    const data = JSON.stringify({
+      model: llmConfig.model || 'claude-3-sonnet-20240229',
+      messages: [
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: llmConfig.maxTokens || 150
+    });
+    
+    return new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: 'api.anthropic.com',
+        path: '/v1/messages',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': llmConfig.apiKey,
+          'anthropic-version': '2023-06-01'
+        }
+      }, (res) => {
+        let responseData = '';
+        res.on('data', (chunk) => responseData += chunk);
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(responseData);
+            resolve(parsed.content?.[0]?.text || null);
+          } catch {
+            resolve(null);
+          }
+        });
+      });
+      
+      req.on('error', () => resolve(null));
+      req.write(data);
+      req.end();
+    });
+  } catch {
+    return null;
+  }
+}
+
+// Generate impact summary for all changes
+async function generateImpactSummary(driftResults, llmConfig) {
+  try {
+    if (!llmConfig || !llmConfig.enabled || driftResults.length === 0) {
+      return null;
+    }
+    
+    // Build context from all drift results
+    const highSeverityChanges = driftResults.filter(r => r.severity === 'high');
+    const context = {
+      totalChanges: driftResults.length,
+      types: [...new Set(driftResults.map(r => r.type))],
+      hasHighSeverity: highSeverityChanges.length > 0,
+      criticalChanges: highSeverityChanges.slice(0, 3).map(r => r.changes[0])
+    };
+    
+    const prompt = `Summarize the impact of these changes in 2-3 sentences:
+${context.totalChanges} total changes across ${context.types.join(', ')}.
+${context.hasHighSeverity ? 'Critical: ' + context.criticalChanges.join(', ') : 'No critical issues.'}
+Focus on business impact and deployment risks.`;
+    
+    if (llmConfig.provider === 'openai') {
+      return await getOpenAIExplanation(prompt, llmConfig);
+    } else if (llmConfig.provider === 'anthropic') {
+      return await getAnthropicExplanation(prompt, llmConfig);
+    }
+  } catch {
+    return null;
+  }
+}
+
 module.exports = {
   generateCommentBody,
-  generateFixSuggestion
+  generateFixSuggestion,
+  getLLMExplanation,
+  generateImpactSummary
 };

@@ -20,6 +20,20 @@ async function run() {
     const costThreshold = core.getInput('cost_threshold');
     const configYamlGlob = core.getInput('config_yaml_glob');
     const featureFlagsPath = core.getInput('feature_flags_path');
+    
+    // LLM configuration for enhanced explanations
+    const llmProvider = core.getInput('llm_provider');
+    const llmApiKey = core.getInput('llm_api_key');
+    const llmModel = core.getInput('llm_model');
+    const llmMaxTokens = parseInt(core.getInput('llm_max_tokens') || '150');
+    
+    const llmConfig = llmProvider && llmApiKey ? {
+      enabled: true,
+      provider: llmProvider,
+      apiKey: llmApiKey,
+      model: llmModel,
+      maxTokens: llmMaxTokens
+    } : null;
 
     // Log input values for initial setup verification
     core.info(`OpenAPI Path: ${openApiPath}`);
@@ -31,6 +45,9 @@ async function run() {
     core.info(`Cost Threshold: ${costThreshold}`);
     core.info(`Fail on Medium: ${failOnMedium}`);
     core.info(`Override: ${override}`);
+    if (llmConfig) {
+      core.info(`LLM Provider: ${llmProvider} (Model: ${llmModel || 'default'})`);
+    }
 
     // Get GitHub context and authenticate
     const token = core.getInput('token') || process.env.GITHUB_TOKEN;
@@ -129,7 +146,7 @@ async function run() {
     
     // Generate and post PR comment with results
     if (driftResults.length > 0) {
-      const commentBody = await generateCommentBody(driftResults, override === 'true');
+      const commentBody = await generateCommentBody(driftResults, override === 'true', llmConfig);
       await postOrUpdateComment(octokit, owner, repo, pullNumber, commentBody);
     } else {
       core.info('No drift detected');
