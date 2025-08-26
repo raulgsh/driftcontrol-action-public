@@ -4,6 +4,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Keep built action files for GitHub Actions
+!dist/
+
 # Environment files
 .env
 .env.local
@@ -84,7 +87,7 @@ jspm_packages/
 
 # Nuxt.js build / generate output
 .nuxt
-dist
+
 
 # Gatsby files
 .cache/
