@@ -40,6 +40,30 @@ async function generateCommentBody(driftResults, isOverride, llmConfig = null) {
     }
   }
   
+  // Display correlation graph if present
+  const hasCorrelations = driftResults.some(r => r.correlations && r.correlations.length > 0);
+  if (hasCorrelations) {
+    comment += '**🔗 Cross-Layer Correlations Detected**:\n\n';
+    
+    // Build simple ASCII graph
+    const graph = buildCorrelationGraph(driftResults);
+    if (graph && graph !== 'No correlations found') {
+      comment += '```\n' + graph + '\n```\n\n';
+    }
+    
+    // List root causes
+    const rootCauses = driftResults.filter(r => r.rootCause);
+    if (rootCauses.length > 0) {
+      comment += '**🎯 Identified Root Causes**:\n';
+      rootCauses.forEach(r => {
+        const confidence = Math.round((r.rootCause.confidence || 0.5) * 100);
+        const icon = r.rootCause.type === 'root_cause' ? '⚡' : '🔍';
+        comment += `- ${icon} **${r.type.toUpperCase()}**: \`${r.file}\` (${confidence}% confidence)\n`;
+      });
+      comment += '\n';
+    }
+  }
+  
   // Add detailed results with collapsible sections for readability
   for (const severity of ['high', 'medium', 'low']) {
     const results = groupedResults[severity];
@@ -366,9 +390,62 @@ Focus on business impact and deployment risks.`;
   }
 }
 
+// Build ASCII correlation graph
+function buildCorrelationGraph(driftResults) {
+  let graph = 'Drift Correlation Graph:\n\n';
+  const drawnRelationships = new Set();
+  
+  driftResults.forEach(result => {
+    if (result.correlations && result.correlations.length > 0) {
+      result.correlations.forEach(corr => {
+        if (corr.source === result) {
+          // Create a unique key for this relationship to avoid duplicates
+          const relKey = `${corr.source.type}:${corr.source.file}→${corr.target.type}:${corr.target.file}`;
+          if (!drawnRelationships.has(relKey)) {
+            drawnRelationships.add(relKey);
+            
+            // Format the labels
+            const sourceLabel = `[${corr.source.type}] ${shortenPath(corr.source.file)}`;
+            const targetLabel = `[${corr.target.type}] ${shortenPath(corr.target.file)}`;
+            const confidence = Math.round((corr.confidence || 0.5) * 100);
+            
+            // Add the relationship line
+            graph += `${sourceLabel}\n`;
+            graph += `  └─${corr.relationship}(${confidence}%)→ ${targetLabel}\n`;
+          }
+        }
+      });
+    }
+  });
+  
+  // If no relationships were drawn, indicate that
+  if (drawnRelationships.size === 0) {
+    return 'No correlations found';
+  }
+  
+  return graph;
+}
+
+// Helper to shorten file paths for readability
+function shortenPath(path) {
+  if (!path) return 'unknown';
+  
+  // If path is longer than 40 chars, show .../ and last part
+  if (path.length > 40) {
+    const parts = path.split('/');
+    if (parts.length > 2) {
+      return `.../${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
+    }
+    return `.../${parts[parts.length - 1]}`;
+  }
+  
+  return path;
+}
+
 module.exports = {
   generateCommentBody,
   generateFixSuggestion,
   getLLMExplanation,
-  generateImpactSummary
+  generateImpactSummary,
+  buildCorrelationGraph
 };

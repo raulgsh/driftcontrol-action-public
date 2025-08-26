@@ -144,6 +144,25 @@ async function run() {
       }
     }
     
+    // Cross-layer correlation analysis
+    if (driftResults.length > 1) {
+      // Build correlation graph from existing results
+      const correlations = correlateAcrossLayers(driftResults, files);
+      
+      // Identify root causes
+      const rootCauses = identifyRootCauses(correlations, driftResults);
+      
+      // Enhance results with correlation data
+      driftResults.forEach(result => {
+        result.correlations = correlations.filter(c => 
+          c.source === result || c.target === result
+        );
+        result.rootCause = rootCauses.find(r => r.result === result);
+      });
+      
+      core.info(`Correlation analysis: found ${correlations.length} relationships and ${rootCauses.length} root causes`);
+    }
+    
     // Generate and post PR comment with results
     if (driftResults.length > 0) {
       const commentBody = await generateCommentBody(driftResults, override === 'true', llmConfig);
@@ -198,12 +217,227 @@ async function run() {
 }
 
 
+// Cross-layer correlation helper functions
+function correlateAcrossLayers(driftResults, files) {
+  const correlations = [];
+  
+  // Link API changes to DB schema
+  const apiChanges = driftResults.filter(r => r.type === 'api');
+  const dbChanges = driftResults.filter(r => r.type === 'database');
+  
+  apiChanges.forEach(api => {
+    dbChanges.forEach(db => {
+      // Check if API endpoint relates to DB table
+      const apiPath = api.file ? api.file.toLowerCase() : '';
+      const dbContent = db.changes ? db.changes.join(' ').toLowerCase() : '';
+      
+      if (detectRelation(apiPath, dbContent)) {
+        correlations.push({
+          source: api,
+          target: db,
+          relationship: 'api_uses_table',
+          confidence: 0.8
+        });
+      }
+      
+      // Check for matching entity names
+      if (db.entities && api.endpoints) {
+        const matchingEntities = db.entities.filter(entity => 
+          api.endpoints.some(endpoint => endpoint.toLowerCase().includes(entity.toLowerCase()))
+        );
+        if (matchingEntities.length > 0) {
+          correlations.push({
+            source: api,
+            target: db,
+            relationship: 'shared_entity',
+            confidence: 0.9
+          });
+        }
+      }
+    });
+  });
+  
+  // Connect IaC to application code
+  const iacChanges = driftResults.filter(r => r.type === 'infrastructure');
+  const configChanges = driftResults.filter(r => r.type === 'configuration');
+  
+  iacChanges.forEach(iac => {
+    configChanges.forEach(config => {
+      // Check for environment variable relationships
+      if ((iac.file && iac.file.includes('terraform')) && 
+          (config.file && (config.file.includes('env') || config.file.includes('config')))) {
+        correlations.push({
+          source: iac,
+          target: config,
+          relationship: 'infra_affects_config',
+          confidence: 0.7
+        });
+      }
+      
+      // Check for resource dependencies
+      if (iac.resources && config.dependencies) {
+        const sharedResources = iac.resources.filter(resource =>
+          config.dependencies.some(dep => dep.toLowerCase().includes(resource.toLowerCase()))
+        );
+        if (sharedResources.length > 0) {
+          correlations.push({
+            source: iac,
+            target: config,
+            relationship: 'resource_dependency',
+            confidence: 0.8
+          });
+        }
+      }
+    });
+    
+    // Link infrastructure to API changes
+    apiChanges.forEach(api => {
+      if (iac.resources && api.file) {
+        // Check if infrastructure change affects API deployment
+        const isApiInfra = iac.resources.some(r => 
+          r.toLowerCase().includes('api') || 
+          r.toLowerCase().includes('gateway') ||
+          r.toLowerCase().includes('function')
+        );
+        if (isApiInfra) {
+          correlations.push({
+            source: iac,
+            target: api,
+            relationship: 'infra_hosts_api',
+            confidence: 0.7
+          });
+        }
+      }
+    });
+  });
+  
+  // Map dependencies
+  const packageChanges = driftResults.filter(r => 
+    r.type === 'configuration' && r.file && r.file.includes('package')
+  );
+  
+  packageChanges.forEach(pkg => {
+    // Link package changes to API
+    apiChanges.forEach(api => {
+      if (pkg.changes && pkg.changes.some(c => c.includes('DEPENDENCY'))) {
+        correlations.push({
+          source: pkg,
+          target: api,
+          relationship: 'dependency_affects_api',
+          confidence: 0.6
+        });
+      }
+    });
+    
+    // Link package changes to database migrations
+    dbChanges.forEach(db => {
+      if (pkg.changes && pkg.changes.some(c => 
+        c.toLowerCase().includes('orm') || 
+        c.toLowerCase().includes('database') ||
+        c.toLowerCase().includes('sql'))) {
+        correlations.push({
+          source: pkg,
+          target: db,
+          relationship: 'dependency_affects_db',
+          confidence: 0.6
+        });
+      }
+    });
+  });
+  
+  return correlations;
+}
+
+function detectRelation(apiPath, dbContent) {
+  // Simple heuristic: check if API path contains table name
+  const tableMatches = dbContent.match(/(\w+)[\s_]table|table[\s_]+(\w+)|drop\s+table\s+(\w+)|create\s+table\s+(\w+)/gi) || [];
+  const tableNames = tableMatches.map(match => {
+    const cleanMatch = match.replace(/[\s_]?table[\s_]?/gi, '').replace(/drop|create/gi, '').trim();
+    return cleanMatch.toLowerCase();
+  }).filter(name => name.length > 0);
+  
+  return tableNames.some(table => {
+    // Check if API path contains the table name (singular or plural)
+    const singular = table.replace(/s$/, '');
+    const plural = table.endsWith('s') ? table : table + 's';
+    return apiPath.includes(singular) || apiPath.includes(plural);
+  });
+}
+
+function identifyRootCauses(correlations, driftResults) {
+  const rootCauses = [];
+  
+  // Find nodes with only outgoing edges (potential root causes)
+  const incomingCount = new Map();
+  const outgoingCount = new Map();
+  
+  driftResults.forEach(r => {
+    incomingCount.set(r, 0);
+    outgoingCount.set(r, 0);
+  });
+  
+  correlations.forEach(c => {
+    incomingCount.set(c.target, (incomingCount.get(c.target) || 0) + 1);
+    outgoingCount.set(c.source, (outgoingCount.get(c.source) || 0) + 1);
+  });
+  
+  // A root cause has outgoing edges but no incoming edges
+  driftResults.forEach(result => {
+    const incoming = incomingCount.get(result) || 0;
+    const outgoing = outgoingCount.get(result) || 0;
+    
+    if (incoming === 0 && outgoing > 0) {
+      rootCauses.push({
+        result,
+        type: 'root_cause',
+        confidence: Math.min(0.9, 0.6 + (outgoing * 0.1)) // Higher confidence with more impacts
+      });
+    }
+  });
+  
+  // If no clear root causes found, identify nodes with highest impact
+  if (rootCauses.length === 0 && correlations.length > 0) {
+    const impactScores = new Map();
+    
+    driftResults.forEach(result => {
+      const outgoing = outgoingCount.get(result) || 0;
+      const incoming = incomingCount.get(result) || 0;
+      const score = outgoing - (incoming * 0.5); // Favor nodes with more outgoing than incoming
+      impactScores.set(result, score);
+    });
+    
+    // Find the highest impact node
+    let maxScore = -1;
+    let maxResult = null;
+    
+    impactScores.forEach((score, result) => {
+      if (score > maxScore) {
+        maxScore = score;
+        maxResult = result;
+      }
+    });
+    
+    if (maxResult && maxScore > 0) {
+      rootCauses.push({
+        result: maxResult,
+        type: 'likely_root_cause',
+        confidence: Math.min(0.7, 0.4 + (maxScore * 0.1))
+      });
+    }
+  }
+  
+  return rootCauses;
+}
+
 // Export helper functions for integration testing
 module.exports = {
   run,
   generateCommentBody: require('./comment-generator').generateCommentBody,
   generateFixSuggestion: require('./comment-generator').generateFixSuggestion,
-  postOrUpdateComment: require('./github-api').postOrUpdateComment
+  postOrUpdateComment: require('./github-api').postOrUpdateComment,
+  correlateAcrossLayers,
+  detectRelation,
+  identifyRootCauses
 };
 
 // Only run if called directly (not imported)

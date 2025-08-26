@@ -16,6 +16,7 @@
 - 🎯 **Smart Risk Scoring**: Categorizes changes by severity (Low, Medium, High)
 - 💬 **Intelligent PR Comments**: Provides detailed analysis and fix suggestions
 - 🤖 **Optional LLM Integration**: Enhanced plain English explanations with OpenAI or Anthropic
+- 🔗 **Cross-Layer Correlation**: Automatically detects relationships between different types of drift
 - ⚙️ **Configurable Policies**: Customize blocking behavior based on risk levels
 - 🔄 **Rename Detection**: Handles file renames intelligently
 - 🛡️ **Override Support**: Emergency bypass with audit trail
@@ -371,6 +372,30 @@ DriftControl provides security-first configuration analysis:
 - **Redacted Sensitive Keys**: Automatically redacts passwords, tokens, API keys
 - **Key-Only Analysis**: Never exposes configuration values, only structure
 - **Feature Flag Tracking**: Monitors feature toggles for unexpected changes
+
+### Cross-Layer Correlation Analysis
+
+DriftControl automatically detects relationships between different types of drift:
+
+**Features:**
+- **API to Database Linking**: Identifies when API endpoint changes relate to database schema modifications
+- **Infrastructure to Application**: Connects IaC changes to application configuration needs
+- **Dependency Impact Mapping**: Shows how dependency changes affect APIs and databases
+- **Root Cause Identification**: Automatically identifies the source of cascading changes
+- **Visual Drift Graph**: Displays relationships as an ASCII graph in PR comments
+
+**Example Output:**
+```
+🔗 Cross-Layer Correlations Detected:
+
+[api] openapi.yaml
+  └─affects(85%)→ [database] migrations/v2.sql
+[database] migrations/v2.sql
+  └─requires(90%)→ [configuration] config/app.yml
+
+🎯 Identified Root Causes:
+- ⚡ API: openapi.yaml (90% confidence)
+```
 
 ### Enhanced Explanations with LLM
 

@@ -205,7 +205,10 @@ class SqlAnalyzer {
           severity: scoringResult.severity,
           changes: sqlChanges,
           reasoning: scoringResult.reasoning,
-          tablesAnalyzed: [...droppedTables, ...createdTables].length
+          tablesAnalyzed: [...droppedTables, ...createdTables].length,
+          // Add metadata for correlation
+          entities: [...new Set([...droppedTables, ...createdTables])],
+          operations: sqlChanges.map(c => c.split(':')[0].trim())
         });
       }
     }
