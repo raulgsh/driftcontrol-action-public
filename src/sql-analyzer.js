@@ -14,9 +14,9 @@ class SqlAnalyzer {
     // Process files for drift detection - convert glob to proper regex
     // Transform glob patterns like "migrations/**/*.sql" to regex
     const globRegexPattern = sqlGlob
-      .replace(/\*\*/g, '.*')  // ** matches any path
-      .replace(/\*/g, '[^/]*')  // * matches any filename part
-      .replace(/\./g, '\\.')    // Escape dots
+      .replace(/\./g, '\\.')    // Escape literal dots FIRST
+      .replace(/\*\*/g, '.*')   // ** matches any path segments
+      .replace(/\*/g, '[^/]*')  // * matches any filename characters (not path separators)
       + '$';
     const sqlPattern = new RegExp(globRegexPattern);
     

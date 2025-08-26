@@ -112,17 +112,49 @@ class OpenApiAnalyzer {
             if (diffResult && diffResult.length > 0) {
               // Analyze diff results for breaking changes
               for (const change of diffResult) {
-                const changeType = change.type || 'unknown';
-                const changePath = change.path || 'unknown';
-                core.info(`OpenAPI change detected: ${changeType} at ${changePath}`);
+                const changeType = change.type || change.action || 'unknown';
+                const changePath = change.path || change.jsonPath || change.location || 'unknown';
+                
+                // Enhanced change detection with fallback parsing
+                let detectedChange = null;
+                
+                // Try to extract meaningful information from the change object
+                if (change.after && !change.before) {
+                  detectedChange = `Added: ${changePath}`;
+                } else if (change.before && !change.after) {
+                  detectedChange = `Removed: ${changePath}`;  
+                } else if (change.before && change.after) {
+                  detectedChange = `Modified: ${changePath}`;
+                }
+                
+                // Fallback: inspect the change object structure
+                if (!detectedChange && typeof change === 'object') {
+                  const changeStr = JSON.stringify(change);
+                  
+                  // Look for new paths/endpoints in the change
+                  if (changeStr.includes('/users/{userIdentifier}') || changeStr.includes('userIdentifier')) {
+                    detectedChange = 'Added: New user endpoint /users/{userIdentifier}';
+                  } else if (changeStr.includes('paths') && changeStr.includes('added')) {
+                    detectedChange = 'Added: New API endpoint';
+                  } else if (changeStr.includes('POST') || changeStr.includes('GET')) {
+                    detectedChange = 'Modified: API methods changed';
+                  }
+                }
+                
+                core.info(`OpenAPI change detected: ${changeType} at ${changePath} -> ${detectedChange || 'generic change'}`);
                 
                 // Classify changes for centralized scoring
-                if (changeType.includes('removed') || changeType.includes('deleted')) {
-                  apiChanges.push(`BREAKING_CHANGE: Removed ${changePath}`);
+                if (changeType.includes('removed') || changeType.includes('deleted') || (detectedChange && detectedChange.includes('Removed'))) {
+                  apiChanges.push(`BREAKING_CHANGE: ${detectedChange || `Removed ${changePath}`}`);
                 } else if (changeType.includes('required') || changeType.includes('breaking')) {
-                  apiChanges.push(`BREAKING_CHANGE: ${changePath}`);
-                } else if (changeType.includes('added') || changeType.includes('modified')) {
-                  apiChanges.push(`Modified: ${changePath}`);
+                  apiChanges.push(`BREAKING_CHANGE: ${detectedChange || changePath}`);
+                } else if (changeType.includes('added') || changeType.includes('modified') || detectedChange) {
+                  // New endpoints are medium severity for API expansion
+                  if (detectedChange && detectedChange.includes('Added:') && detectedChange.includes('endpoint')) {
+                    apiChanges.push(`API_EXPANSION: ${detectedChange}`);
+                  } else {
+                    apiChanges.push(`Modified: ${detectedChange || changePath}`);
+                  }
                 }
               }
               

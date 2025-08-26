@@ -17,7 +17,7 @@ const riskScorer = {
   assessMediumSeverity(changeType, details) {
     const mediumRiskIndicators = [
       'TYPE NARROWING', 'NOT NULL', 'REQUIRED', 'COLUMN RENAME',
-      'BREAKING CHANGE', 'ADD CONSTRAINT'
+      'BREAKING CHANGE', 'ADD CONSTRAINT', 'API_EXPANSION'
     ];
     
     return mediumRiskIndicators.some(indicator => 
