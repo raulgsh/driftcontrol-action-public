@@ -26,6 +26,18 @@ inputs:
     description: 'Boolean to bypass the merge block'
     required: false
     default: 'false'
+  terraform_plan_path:
+    description: 'Path to Terraform plan JSON file'
+    required: false
+    default: ''
+  cloudformation_glob:
+    description: 'Glob pattern for CloudFormation template files'
+    required: false
+    default: ''
+  cost_threshold:
+    description: 'Cost increase threshold in USD to trigger medium severity'
+    required: false
+    default: '1000'
 
 runs:
   using: 'node20'

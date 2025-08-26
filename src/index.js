@@ -2,6 +2,7 @@ const core = require('@actions/core');
 const github = require('@actions/github');
 const SqlAnalyzer = require('./sql-analyzer');
 const OpenApiAnalyzer = require('./openapi-analyzer');
+const IaCAnalyzer = require('./iac-analyzer');
 const { generateCommentBody, generateFixSuggestion } = require('./comment-generator');
 const { postOrUpdateComment } = require('./github-api');
 const riskScorer = require('./risk-scorer');
@@ -13,10 +14,16 @@ async function run() {
     const sqlGlob = core.getInput('sql_glob');
     const failOnMedium = core.getInput('fail_on_medium');
     const override = core.getInput('override');
+    const terraformPlanPath = core.getInput('terraform_plan_path');
+    const cloudformationGlob = core.getInput('cloudformation_glob');
+    const costThreshold = core.getInput('cost_threshold');
 
     // Log input values for initial setup verification
     core.info(`OpenAPI Path: ${openApiPath}`);
     core.info(`SQL Glob: ${sqlGlob}`);
+    core.info(`Terraform Plan Path: ${terraformPlanPath}`);
+    core.info(`CloudFormation Glob: ${cloudformationGlob}`);
+    core.info(`Cost Threshold: ${costThreshold}`);
     core.info(`Fail on Medium: ${failOnMedium}`);
     core.info(`Override: ${override}`);
 
@@ -52,6 +59,7 @@ async function run() {
     // Initialize analyzers
     const sqlAnalyzer = new SqlAnalyzer();
     const openApiAnalyzer = new OpenApiAnalyzer();
+    const iacAnalyzer = new IaCAnalyzer();
     
     // Detect OpenAPI spec file renames
     const { actualOpenApiPath, renamedFromPath } = openApiAnalyzer.detectSpecRenames(files, openApiPath);
@@ -77,6 +85,17 @@ async function run() {
     driftResults.push(...apiResults.driftResults);
     hasHighSeverity = hasHighSeverity || apiResults.hasHighSeverity;
     hasMediumSeverity = hasMediumSeverity || apiResults.hasMediumSeverity;
+    
+    // Analyze Infrastructure as Code drift
+    if (terraformPlanPath || cloudformationGlob) {
+      const iacResults = await iacAnalyzer.analyzeIaCFiles(
+        files, octokit, owner, repo, context.payload.pull_request.head.sha,
+        terraformPlanPath, cloudformationGlob, costThreshold
+      );
+      driftResults.push(...iacResults.driftResults);
+      hasHighSeverity = hasHighSeverity || iacResults.hasHighSeverity;
+      hasMediumSeverity = hasMediumSeverity || iacResults.hasMediumSeverity;
+    }
     
     // Generate and post PR comment with results
     if (driftResults.length > 0) {

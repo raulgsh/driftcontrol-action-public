@@ -485,9 +485,9 @@ describe('Integration Tests', () => {
 
       await run();
 
-      // Should detect multiple high severity issues
+      // Should detect multiple high severity issues - updated format includes breakdown
       expect(core.setFailed).toHaveBeenCalledWith(
-        expect.stringContaining('High severity drift detected (2 issues)')
+        expect.stringContaining('High severity drift detected (2 total issues')
       );
 
       const createCommentCall = mockOctokit.rest.issues.createComment.mock.calls[0];

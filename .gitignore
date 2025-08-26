@@ -115,3 +115,11 @@ temp/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Internal Files
+ARCHITECTURE.md
+TODOS.md
+USER_FLOWS.md
+CLAUDE.md
+SPEC.md
+CC_TEMPLATE.md

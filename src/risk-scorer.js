@@ -1,10 +1,11 @@
 // Centralized Risk Scoring Engine (MVP 3-level) - consolidates duplicate logic
 const riskScorer = {
-  // High severity: Breaking API changes, destructive DB operations
+  // High severity: Breaking API changes, destructive DB operations, critical infrastructure changes
   assessHighSeverity(changeType, details) {
     const highRiskIndicators = [
       'DROP TABLE', 'DROP COLUMN', 'TRUNCATE TABLE', 'DROP CONSTRAINT',
-      'COLUMN LOSS', 'API_DELETION', 'BREAKING_CHANGE'
+      'COLUMN LOSS', 'API_DELETION', 'BREAKING_CHANGE',
+      'SECURITY_GROUP_DELETION', 'RESOURCE_DELETION'
     ];
     
     return highRiskIndicators.some(indicator => 
@@ -13,11 +14,12 @@ const riskScorer = {
     );
   },
   
-  // Medium severity: New required fields, non-nullable constraints, type narrowing
+  // Medium severity: New required fields, non-nullable constraints, type narrowing, security changes
   assessMediumSeverity(changeType, details) {
     const mediumRiskIndicators = [
       'TYPE NARROWING', 'NOT NULL', 'REQUIRED', 'COLUMN RENAME',
-      'BREAKING CHANGE', 'ADD CONSTRAINT', 'API_EXPANSION'
+      'BREAKING CHANGE', 'ADD CONSTRAINT', 'API_EXPANSION',
+      'SECURITY_GROUP_CHANGE', 'COST_INCREASE', 'RESOURCE_DELETION_POLICY'
     ];
     
     return mediumRiskIndicators.some(indicator => 

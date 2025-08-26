@@ -153,6 +153,25 @@ function generateFixSuggestion(change, driftType, severity) {
     }
   }
   
+  // Infrastructure drift fix suggestions
+  if (driftType === 'infrastructure') {
+    if (changeUpper.includes('SECURITY_GROUP_DELETION')) {
+      return '🔒 Review security implications and ensure alternative security controls are in place';
+    }
+    if (changeUpper.includes('SECURITY_GROUP_CHANGE')) {
+      return '🛡️ Validate security group rules don\'t expose sensitive services to public internet';
+    }
+    if (changeUpper.includes('RESOURCE_DELETION')) {
+      return '⚠️ Ensure data backup and migration strategy before deleting resources';
+    }
+    if (changeUpper.includes('COST_INCREASE')) {
+      return '💰 Review budget allocation and consider cost optimization strategies';
+    }
+    if (changeUpper.includes('RESOURCE_DELETION_POLICY')) {
+      return '📋 Verify deletion policy aligns with data retention requirements';
+    }
+  }
+  
   // Generic suggestions based on severity
   if (severity === 'high') {
     return 'High impact change detected. Consider phased rollout and rollback plan.';
