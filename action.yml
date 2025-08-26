@@ -38,6 +38,14 @@ inputs:
     description: 'Cost increase threshold in USD to trigger medium severity'
     required: false
     default: '1000'
+  config_yaml_glob:
+    description: 'Glob pattern for configuration YAML files'
+    required: false
+    default: ''
+  feature_flags_path:
+    description: 'Path to feature flags configuration file'
+    required: false
+    default: ''
 
 runs:
   using: 'node20'

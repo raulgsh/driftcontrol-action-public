@@ -172,6 +172,28 @@ function generateFixSuggestion(change, driftType, severity) {
     }
   }
   
+  // Configuration drift fix suggestions
+  if (driftType === 'configuration') {
+    if (changeUpper.includes('SECRET_KEY')) {
+      return '🔐 CRITICAL: Verify no secrets are exposed. Rotate credentials if necessary';
+    }
+    if (changeUpper.includes('FEATURE_FLAG')) {
+      return '🚦 Ensure feature flag changes are coordinated with release plan';
+    }
+    if (changeUpper.includes('DEPENDENCY_REMOVED')) {
+      return '📦 Verify removed dependencies are no longer used in codebase';
+    }
+    if (changeUpper.includes('DEPENDENCY_ADDED')) {
+      return '🔍 Review new dependencies for security vulnerabilities and licensing';
+    }
+    if (changeUpper.includes('CONTAINER_REMOVED')) {
+      return '🐳 Ensure container removal won\'t break dependent services';
+    }
+    if (changeUpper.includes('CONFIG_KEY')) {
+      return '⚙️ Verify configuration changes are documented and tested';
+    }
+  }
+  
   // Generic suggestions based on severity
   if (severity === 'high') {
     return 'High impact change detected. Consider phased rollout and rollback plan.';

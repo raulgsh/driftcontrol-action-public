@@ -5,7 +5,8 @@ const riskScorer = {
     const highRiskIndicators = [
       'DROP TABLE', 'DROP COLUMN', 'TRUNCATE TABLE', 'DROP CONSTRAINT',
       'COLUMN LOSS', 'API_DELETION', 'BREAKING_CHANGE',
-      'SECURITY_GROUP_DELETION', 'RESOURCE_DELETION'
+      'SECURITY_GROUP_DELETION', 'RESOURCE_DELETION',
+      'SECRET_KEY_REMOVED', 'SECRET_KEY_ADDED'
     ];
     
     return highRiskIndicators.some(indicator => 
@@ -19,7 +20,8 @@ const riskScorer = {
     const mediumRiskIndicators = [
       'TYPE NARROWING', 'NOT NULL', 'REQUIRED', 'COLUMN RENAME',
       'BREAKING CHANGE', 'ADD CONSTRAINT', 'API_EXPANSION',
-      'SECURITY_GROUP_CHANGE', 'COST_INCREASE', 'RESOURCE_DELETION_POLICY'
+      'SECURITY_GROUP_CHANGE', 'COST_INCREASE', 'RESOURCE_DELETION_POLICY',
+      'FEATURE_FLAG_', 'CONTAINER_REMOVED', 'DEPENDENCY_REMOVED'
     ];
     
     return mediumRiskIndicators.some(indicator => 
