@@ -1,7 +1,7 @@
 const core = require('@actions/core');
 const { diff } = require('@useoptic/openapi-utilities');
 const SwaggerParser = require('@apidevtools/swagger-parser');
-const yaml = require('js-yaml');
+const yaml = require('yaml');
 const riskScorer = require('./risk-scorer');
 
 class OpenApiAnalyzer {
