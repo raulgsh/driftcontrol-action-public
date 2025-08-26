@@ -121,15 +121,39 @@ class OpenApiAnalyzer {
                 // Enhanced change detection with fallback parsing
                 let detectedChange = null;
                 
+                // Decode escaped path notation (~1 = /, ~0 = ~)
+                const decodePath = (path) => {
+                  if (typeof path === 'string') {
+                    return path.replace(/~1/g, '/').replace(/~0/g, '~');
+                  }
+                  return path;
+                };
+                
                 // Try to extract meaningful information from the change object
                 // Check if this is an @useoptic/openapi-utilities diff format
-                if (change.after !== undefined && change.before !== undefined) {
+                if (change.after !== undefined || change.before !== undefined) {
+                  const afterPath = decodePath(change.after);
+                  const beforePath = decodePath(change.before);
+                  
                   if (change.after && !change.before) {
-                    detectedChange = `Added: ${changePath}`;
+                    // Something was added
+                    detectedChange = `Added: ${afterPath}`;
+                    // Check if it's a new endpoint
+                    if (afterPath && afterPath.includes('/paths/')) {
+                      const endpoint = afterPath.replace('/paths/', '');
+                      detectedChange = `Added: New endpoint ${endpoint}`;
+                    }
                   } else if (change.before && !change.after) {
-                    detectedChange = `Removed: ${changePath}`;  
+                    // Something was removed
+                    detectedChange = `Removed: ${beforePath}`;
+                    // Check if it's an endpoint removal
+                    if (beforePath && beforePath.includes('/paths/')) {
+                      const endpoint = beforePath.replace('/paths/', '');
+                      detectedChange = `REMOVED_ENDPOINT: ${endpoint}`;
+                    }
                   } else if (change.before && change.after) {
-                    detectedChange = `Modified: ${changePath}`;
+                    // Something was modified
+                    detectedChange = `Modified: ${beforePath} -> ${afterPath}`;
                   }
                 }
                 
@@ -150,7 +174,10 @@ class OpenApiAnalyzer {
                 core.info(`OpenAPI change detected: ${changeType} at ${changePath} -> ${detectedChange || 'generic change'}`);
                 
                 // Classify changes for centralized scoring
-                if (changeType.includes('removed') || changeType.includes('deleted') || (detectedChange && detectedChange.includes('Removed'))) {
+                if (detectedChange && detectedChange.includes('REMOVED_ENDPOINT')) {
+                  // Endpoint removal is always a breaking change
+                  apiChanges.push(`BREAKING_CHANGE: ${detectedChange}`);
+                } else if (changeType.includes('removed') || changeType.includes('deleted') || (detectedChange && detectedChange.includes('Removed'))) {
                   apiChanges.push(`BREAKING_CHANGE: ${detectedChange || `Removed ${changePath}`}`);
                 } else if (changeType.includes('required') || changeType.includes('breaking')) {
                   apiChanges.push(`BREAKING_CHANGE: ${detectedChange || changePath}`);
@@ -159,7 +186,7 @@ class OpenApiAnalyzer {
                   if (detectedChange && detectedChange.includes('Added:') && detectedChange.includes('endpoint')) {
                     apiChanges.push(`API_EXPANSION: ${detectedChange}`);
                   } else {
-                    apiChanges.push(`Modified: ${detectedChange || changePath}`);
+                    apiChanges.push(`${detectedChange || `Modified: ${changePath}`}`);
                   }
                 }
               }
