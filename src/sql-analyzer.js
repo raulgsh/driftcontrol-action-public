@@ -13,11 +13,25 @@ class SqlAnalyzer {
 
     // Process files for drift detection - convert glob to proper regex
     // Transform glob patterns like "migrations/**/*.sql" to regex
-    const globRegexPattern = sqlGlob
-      .replace(/\./g, '\\.')    // Escape literal dots FIRST
-      .replace(/\*\*/g, '.*')   // ** matches any path segments
-      .replace(/\*/g, '[^/]*')  // * matches any filename characters (not path separators)
-      + '$';
+    // Special case for common pattern: **/* means "any file in this dir or subdirs"
+    let globRegexPattern;
+    if (sqlGlob.includes('**/')) {
+      // For patterns like "migrations/**/*.sql", match anything under migrations/
+      const parts = sqlGlob.split('**/');
+      const prefix = parts[0].replace(/\./g, '\\.');
+      const suffix = parts[1]
+        .replace(/\./g, '\\.')
+        .replace(/\*/g, '[^/]*');
+      // Match prefix, then any path (including no subdirs), then suffix
+      globRegexPattern = `^${prefix}.*${suffix}$`;
+    } else {
+      // Fallback for other patterns
+      globRegexPattern = sqlGlob
+        .replace(/\./g, '\\.')
+        .replace(/\*\*/g, '.*')
+        .replace(/\*/g, '[^/]*')
+        + '$';
+    }
     const sqlPattern = new RegExp(globRegexPattern);
     
     // Check for SQL migration files in changed files

@@ -112,6 +112,9 @@ class OpenApiAnalyzer {
             if (diffResult && diffResult.length > 0) {
               // Analyze diff results for breaking changes
               for (const change of diffResult) {
+                // Log the full change object to understand its structure
+                core.info(`Full change object: ${JSON.stringify(change)}`);
+                
                 const changeType = change.type || change.action || 'unknown';
                 const changePath = change.path || change.jsonPath || change.location || 'unknown';
                 
@@ -119,12 +122,15 @@ class OpenApiAnalyzer {
                 let detectedChange = null;
                 
                 // Try to extract meaningful information from the change object
-                if (change.after && !change.before) {
-                  detectedChange = `Added: ${changePath}`;
-                } else if (change.before && !change.after) {
-                  detectedChange = `Removed: ${changePath}`;  
-                } else if (change.before && change.after) {
-                  detectedChange = `Modified: ${changePath}`;
+                // Check if this is an @useoptic/openapi-utilities diff format
+                if (change.after !== undefined && change.before !== undefined) {
+                  if (change.after && !change.before) {
+                    detectedChange = `Added: ${changePath}`;
+                  } else if (change.before && !change.after) {
+                    detectedChange = `Removed: ${changePath}`;  
+                  } else if (change.before && change.after) {
+                    detectedChange = `Modified: ${changePath}`;
+                  }
                 }
                 
                 // Fallback: inspect the change object structure

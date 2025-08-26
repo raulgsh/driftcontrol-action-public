@@ -54513,6 +54513,9 @@ class OpenApiAnalyzer {
             if (diffResult && diffResult.length > 0) {
               // Analyze diff results for breaking changes
               for (const change of diffResult) {
+                // Log the full change object to understand its structure
+                core.info(`Full change object: ${JSON.stringify(change)}`);
+                
                 const changeType = change.type || change.action || 'unknown';
                 const changePath = change.path || change.jsonPath || change.location || 'unknown';
                 
@@ -54520,12 +54523,15 @@ class OpenApiAnalyzer {
                 let detectedChange = null;
                 
                 // Try to extract meaningful information from the change object
-                if (change.after && !change.before) {
-                  detectedChange = `Added: ${changePath}`;
-                } else if (change.before && !change.after) {
-                  detectedChange = `Removed: ${changePath}`;  
-                } else if (change.before && change.after) {
-                  detectedChange = `Modified: ${changePath}`;
+                // Check if this is an @useoptic/openapi-utilities diff format
+                if (change.after !== undefined && change.before !== undefined) {
+                  if (change.after && !change.before) {
+                    detectedChange = `Added: ${changePath}`;
+                  } else if (change.before && !change.after) {
+                    detectedChange = `Removed: ${changePath}`;  
+                  } else if (change.before && change.after) {
+                    detectedChange = `Modified: ${changePath}`;
+                  }
                 }
                 
                 // Fallback: inspect the change object structure
@@ -54719,11 +54725,25 @@ class SqlAnalyzer {
 
     // Process files for drift detection - convert glob to proper regex
     // Transform glob patterns like "migrations/**/*.sql" to regex
-    const globRegexPattern = sqlGlob
-      .replace(/\./g, '\\.')    // Escape literal dots FIRST
-      .replace(/\*\*/g, '.*')   // ** matches any path segments
-      .replace(/\*/g, '[^/]*')  // * matches any filename characters (not path separators)
-      + '$';
+    // Special case for common pattern: **/* means "any file in this dir or subdirs"
+    let globRegexPattern;
+    if (sqlGlob.includes('**/')) {
+      // For patterns like "migrations/**/*.sql", match anything under migrations/
+      const parts = sqlGlob.split('**/');
+      const prefix = parts[0].replace(/\./g, '\\.');
+      const suffix = parts[1]
+        .replace(/\./g, '\\.')
+        .replace(/\*/g, '[^/]*');
+      // Match prefix, then any path (including no subdirs), then suffix
+      globRegexPattern = `^${prefix}.*${suffix}$`;
+    } else {
+      // Fallback for other patterns
+      globRegexPattern = sqlGlob
+        .replace(/\./g, '\\.')
+        .replace(/\*\*/g, '.*')
+        .replace(/\*/g, '[^/]*')
+        + '$';
+    }
     const sqlPattern = new RegExp(globRegexPattern);
     
     // Check for SQL migration files in changed files
