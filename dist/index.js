@@ -54538,15 +54538,8 @@ class ConfigAnalyzer {
       const headContent = Buffer.from(headData.content, 'base64').toString();
       const headPackage = JSON.parse(headContent);
       
-      // Extract only dependency and script keys (not versions)
-      const headKeys = [
-        ...Object.keys(headPackage.dependencies || {}).map(k => `dependencies.${k}`),
-        ...Object.keys(headPackage.devDependencies || {}).map(k => `devDependencies.${k}`),
-        ...Object.keys(headPackage.scripts || {}).map(k => `scripts.${k}`)
-      ];
-      
       // Fetch base version
-      let baseKeys = [];
+      let basePackage = null;
       try {
         const { data: baseData } = await octokit.rest.repos.getContent({
           owner,
@@ -54556,30 +54549,55 @@ class ConfigAnalyzer {
         });
         
         const baseContent = Buffer.from(baseData.content, 'base64').toString();
-        const basePackage = JSON.parse(baseContent);
-        
-        baseKeys = [
-          ...Object.keys(basePackage.dependencies || {}).map(k => `dependencies.${k}`),
-          ...Object.keys(basePackage.devDependencies || {}).map(k => `devDependencies.${k}`),
-          ...Object.keys(basePackage.scripts || {}).map(k => `scripts.${k}`)
-        ];
+        basePackage = JSON.parse(baseContent);
       } catch (e) {
         core.info(`No base version found for package.json`);
       }
       
       const changes = [];
-      const baseSet = new Set(baseKeys);
-      const headSet = new Set(headKeys);
       
-      const added = [...headSet].filter(k => !baseSet.has(k));
-      const removed = [...baseSet].filter(k => !headSet.has(k));
+      // Check for added/removed dependencies
+      const baseDeps = basePackage ? {
+        ...basePackage.dependencies,
+        ...basePackage.devDependencies
+      } : {};
       
-      for (const key of removed) {
-        changes.push(`DEPENDENCY_REMOVED: ${key}`);
+      const headDeps = {
+        ...headPackage.dependencies,
+        ...headPackage.devDependencies
+      };
+      
+      // Check for removed dependencies
+      for (const [name, version] of Object.entries(baseDeps)) {
+        if (!headDeps[name]) {
+          changes.push(`DEPENDENCY_REMOVED: ${name}`);
+        }
       }
       
-      for (const key of added) {
-        changes.push(`DEPENDENCY_ADDED: ${key}`);
+      // Check for added dependencies and version changes
+      for (const [name, version] of Object.entries(headDeps)) {
+        if (!baseDeps[name]) {
+          changes.push(`DEPENDENCY_ADDED: ${name}`);
+          // Check if it's a known vulnerable package
+          if (this.isKnownVulnerablePackage(name, version)) {
+            changes.push(`SECURITY_VULNERABILITY: ${name}`);
+          }
+        } else if (baseDeps[name] !== version) {
+          // Analyze version change
+          const versionChange = this.analyzeVersionChange(baseDeps[name], version);
+          if (versionChange.isMajor) {
+            changes.push(`MAJOR_VERSION_BUMP: ${name}`);
+          } else if (versionChange.isMinor) {
+            changes.push(`MINOR_VERSION_BUMP: ${name}`);
+          } else {
+            changes.push(`PATCH_VERSION_UPDATE: ${name}`);
+          }
+        }
+      }
+      
+      // Check for license changes (if license field exists)
+      if (basePackage && basePackage.license !== headPackage.license) {
+        changes.push(`LICENSE_CHANGE: ${basePackage.license || 'none'} -> ${headPackage.license || 'none'}`);
       }
       
       if (changes.length > 0) {
@@ -54600,6 +54618,142 @@ class ConfigAnalyzer {
     return null;
   }
 
+  // Helper method to analyze version changes
+  analyzeVersionChange(oldVersion, newVersion) {
+    // Remove common prefixes (^, ~, =, v)
+    const clean = (v) => v.replace(/^[\^~=v]/, '');
+    const oldParts = clean(oldVersion).split('.');
+    const newParts = clean(newVersion).split('.');
+    
+    return {
+      isMajor: oldParts[0] !== newParts[0],
+      isMinor: oldParts[0] === newParts[0] && oldParts[1] !== newParts[1],
+      isPatch: oldParts[0] === newParts[0] && oldParts[1] === newParts[1] && oldParts[2] !== newParts[2]
+    };
+  }
+  
+  // Check for known security vulnerabilities (simplified - would use real database in production)
+  isKnownVulnerablePackage(packageName, version) {
+    // This is a simplified check - in production, would query CVE database
+    const knownVulnerable = [
+      'event-stream', // known malicious package
+      'flatmap-stream', // known malicious package
+      'eslint-scope@3.7.2', // known compromised version
+      'bootstrap@<3.4.0', // known XSS vulnerability
+      'lodash@<4.17.11' // known prototype pollution
+    ];
+    
+    return knownVulnerable.some(vuln => {
+      if (vuln.includes('@')) {
+        const [name, vulnVersion] = vuln.split('@');
+        return packageName === name && version === vulnVersion;
+      }
+      return packageName === vuln;
+    });
+  }
+  
+  // Analyze package-lock.json for transitive dependency changes
+  async analyzePackageLock(octokit, owner, repo, pullRequestHeadSha, lockPath) {
+    try {
+      core.info(`Analyzing package-lock.json: ${lockPath}`);
+      
+      // Fetch current version
+      const { data: headData } = await octokit.rest.repos.getContent({
+        owner,
+        repo,
+        path: lockPath,
+        ref: pullRequestHeadSha
+      });
+      
+      const headContent = Buffer.from(headData.content, 'base64').toString();
+      const headLock = JSON.parse(headContent);
+      
+      // Fetch base version
+      let baseLock = null;
+      try {
+        const { data: baseData } = await octokit.rest.repos.getContent({
+          owner,
+          repo,
+          path: lockPath,
+          ref: 'HEAD~1'
+        });
+        
+        const baseContent = Buffer.from(baseData.content, 'base64').toString();
+        baseLock = JSON.parse(baseContent);
+      } catch (e) {
+        core.info(`No base version found for package-lock.json`);
+      }
+      
+      const changes = [];
+      
+      if (!baseLock) {
+        changes.push('NEW_LOCK_FILE: package-lock.json created');
+      } else {
+        // Compare lock file versions
+        const baseDependencies = baseLock.dependencies || baseLock.packages || {};
+        const headDependencies = headLock.dependencies || headLock.packages || {};
+        
+        let transitiveChanges = 0;
+        let vulnerablePackages = [];
+        
+        // Check for changed transitive dependencies
+        for (const [name, info] of Object.entries(headDependencies)) {
+          const baseDep = baseDependencies[name];
+          if (!baseDep) {
+            transitiveChanges++;
+            // Check for vulnerabilities in new dependencies
+            if (this.isKnownVulnerablePackage(name, info.version)) {
+              vulnerablePackages.push(name);
+            }
+          } else if (baseDep.version !== info.version) {
+            transitiveChanges++;
+            const versionChange = this.analyzeVersionChange(baseDep.version, info.version);
+            if (versionChange.isMajor) {
+              changes.push(`TRANSITIVE_MAJOR_BUMP: ${name}`);
+            }
+          }
+        }
+        
+        if (transitiveChanges > 0) {
+          changes.push(`TRANSITIVE_DEPENDENCIES_CHANGED: ${transitiveChanges} packages`);
+        }
+        
+        for (const vuln of vulnerablePackages) {
+          changes.push(`SECURITY_VULNERABILITY: ${vuln} (transitive)`);
+        }
+        
+        // Check integrity changes (potential security issue)
+        const integrityMismatches = [];
+        for (const [name, info] of Object.entries(headDependencies)) {
+          const baseDep = baseDependencies[name];
+          if (baseDep && baseDep.integrity && info.integrity && baseDep.integrity !== info.integrity && baseDep.version === info.version) {
+            integrityMismatches.push(name);
+          }
+        }
+        
+        if (integrityMismatches.length > 0) {
+          changes.push(`INTEGRITY_MISMATCH: ${integrityMismatches.length} packages have different checksums`);
+        }
+      }
+      
+      if (changes.length > 0) {
+        const scoringResult = this.riskScorer.scoreChanges(changes, 'PACKAGE_LOCK');
+        
+        return {
+          type: 'configuration',
+          file: lockPath,
+          severity: scoringResult.severity,
+          changes: changes,
+          reasoning: scoringResult.reasoning
+        };
+      }
+    } catch (error) {
+      core.warning(`package-lock.json analysis failed: ${error.message}`);
+    }
+    
+    return null;
+  }
+  
   async analyzeDockerCompose(octokit, owner, repo, pullRequestHeadSha, composePath) {
     try {
       core.info(`Analyzing docker-compose: ${composePath}`);
@@ -55083,7 +55237,7 @@ async function run() {
     }
     
     // Analyze Configuration drift (security-first: keys only)
-    if (configYamlGlob || featureFlagsPath || files.some(f => f.filename.endsWith('package.json') || f.filename.includes('docker-compose'))) {
+    if (configYamlGlob || featureFlagsPath || files.some(f => f.filename.endsWith('package.json') || f.filename.endsWith('package-lock.json') || f.filename.includes('docker-compose'))) {
       const configResults = await configAnalyzer.analyzeConfigFiles(
         files, octokit, owner, repo, context.payload.pull_request.head.sha,
         configYamlGlob, featureFlagsPath
@@ -55091,6 +55245,19 @@ async function run() {
       driftResults.push(...configResults.driftResults);
       hasHighSeverity = hasHighSeverity || configResults.hasHighSeverity;
       hasMediumSeverity = hasMediumSeverity || configResults.hasMediumSeverity;
+      
+      // Also analyze package-lock.json files specifically
+      const packageLockFiles = files.filter(f => f.filename.endsWith('package-lock.json'));
+      for (const file of packageLockFiles) {
+        const lockResult = await configAnalyzer.analyzePackageLock(
+          octokit, owner, repo, context.payload.pull_request.head.sha, file.filename
+        );
+        if (lockResult) {
+          driftResults.push(lockResult);
+          if (lockResult.severity === 'high') hasHighSeverity = true;
+          if (lockResult.severity === 'medium') hasMediumSeverity = true;
+        }
+      }
     }
     
     // Generate and post PR comment with results
@@ -55422,7 +55589,9 @@ const riskScorer = {
       'DROP TABLE', 'DROP COLUMN', 'TRUNCATE TABLE', 'DROP CONSTRAINT',
       'COLUMN LOSS', 'API_DELETION', 'BREAKING_CHANGE',
       'SECURITY_GROUP_DELETION', 'RESOURCE_DELETION',
-      'SECRET_KEY_REMOVED', 'SECRET_KEY_ADDED'
+      'SECRET_KEY_REMOVED', 'SECRET_KEY_ADDED',
+      'MAJOR_VERSION_BUMP', 'SECURITY_VULNERABILITY', 'CVE_DETECTED',
+      'INTEGRITY_MISMATCH', 'TRANSITIVE_MAJOR_BUMP'
     ];
     
     return highRiskIndicators.some(indicator => 
@@ -55437,7 +55606,9 @@ const riskScorer = {
       'TYPE NARROWING', 'NOT NULL', 'REQUIRED', 'COLUMN RENAME',
       'BREAKING CHANGE', 'ADD CONSTRAINT', 'API_EXPANSION',
       'SECURITY_GROUP_CHANGE', 'COST_INCREASE', 'RESOURCE_DELETION_POLICY',
-      'FEATURE_FLAG_', 'CONTAINER_REMOVED', 'DEPENDENCY_REMOVED'
+      'FEATURE_FLAG_', 'CONTAINER_REMOVED', 'DEPENDENCY_REMOVED',
+      'MINOR_VERSION_BUMP', 'LICENSE_CHANGE', 'DEPRECATED_PACKAGE',
+      'TRANSITIVE_DEPENDENCIES_CHANGED', 'NEW_LOCK_FILE'
     ];
     
     return mediumRiskIndicators.some(indicator => 

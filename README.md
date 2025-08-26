@@ -4,12 +4,15 @@
 [![GitHub Release](https://img.shields.io/github/release/raulgsh/driftcontrol-action-public.svg)](https://github.com/raulgsh/driftcontrol-action-public/releases)
 [![Node.js CI](https://github.com/raulgsh/driftcontrol-action-public/workflows/Node.js%20CI/badge.svg)](https://github.com/raulgsh/driftcontrol-action-public/actions)
 
-**DriftControl** is a GitHub Action that automatically detects and analyzes API and database drift in pull requests. It helps prevent breaking changes by analyzing OpenAPI specifications and SQL migration files, providing detailed feedback on potential risks before merging.
+**DriftControl** is a comprehensive GitHub Action that automatically detects and analyzes drift across your entire stack - APIs, databases, dependencies, infrastructure, and configuration. It helps prevent breaking changes by analyzing changes in OpenAPI specifications, SQL migrations, package dependencies, Terraform/CloudFormation templates, and configuration files, providing detailed feedback on potential risks before merging.
 
 ## ✨ Features
 
 - 🔍 **API Drift Detection**: Analyzes OpenAPI specification changes for breaking API modifications
 - 📊 **Database Schema Analysis**: Detects risky SQL operations in migration files
+- 📦 **Dependency Drift Detection**: Monitors package.json and package-lock.json for version changes, security vulnerabilities, and license modifications
+- 🏗️ **Infrastructure as Code Analysis**: Analyzes Terraform plans and CloudFormation templates for infrastructure drift
+- ⚙️ **Configuration Drift Detection**: Monitors configuration files, Docker Compose, and feature flags for changes
 - 🎯 **Smart Risk Scoring**: Categorizes changes by severity (Low, Medium, High)
 - 💬 **Intelligent PR Comments**: Provides detailed analysis and fix suggestions
 - ⚙️ **Configurable Policies**: Customize blocking behavior based on risk levels
@@ -50,6 +53,11 @@ jobs:
     token: ${{ secrets.GITHUB_TOKEN }}
     openapi_path: 'api/openapi.yml'
     sql_glob: 'database/migrations/**/*.sql'
+    terraform_plan_path: 'terraform/plan.json'
+    cloudformation_glob: 'cloudformation/**/*.yml'
+    config_yaml_glob: 'config/**/*.yml'
+    feature_flags_path: 'config/features.json'
+    cost_threshold: '100'
     fail_on_medium: 'true'
     override: 'false'
 ```
@@ -63,6 +71,11 @@ jobs:
 | `token` | GitHub token for API access | No | `${{ github.token }}` |
 | `openapi_path` | Path to the OpenAPI specification file | No | `openapi.yaml` |
 | `sql_glob` | Glob pattern for SQL migration files | No | `migrations/**/*.sql` |
+| `terraform_plan_path` | Path to Terraform plan JSON file | No | - |
+| `cloudformation_glob` | Glob pattern for CloudFormation templates | No | - |
+| `config_yaml_glob` | Glob pattern for configuration YAML files | No | - |
+| `feature_flags_path` | Path to feature flags file | No | - |
+| `cost_threshold` | Cost threshold for infrastructure changes | No | - |
 | `fail_on_medium` | Block merges on medium-severity drift | No | `false` |
 | `override` | Bypass merge blocks (with audit trail) | No | `false` |
 
@@ -71,14 +84,23 @@ jobs:
 #### High Severity (❌ Blocks merge by default)
 - **API**: Endpoint removal, breaking parameter changes, response schema removal
 - **Database**: `DROP TABLE`, `DROP COLUMN`, table/column deletions
+- **Dependencies**: Major version bumps, security vulnerabilities (CVE), integrity mismatches
+- **Infrastructure**: Security group deletions, resource deletions, critical resource changes
+- **Configuration**: Secret key removal/addition, critical configuration changes
 
 #### Medium Severity (⚠️ Configurable blocking)
 - **API**: Required field additions, parameter type changes
 - **Database**: `NOT NULL` constraints, column type narrowing, constraint additions
+- **Dependencies**: Minor version bumps, license changes, transitive dependency changes
+- **Infrastructure**: Cost increases above threshold, security group changes, resource policy changes
+- **Configuration**: Feature flag changes, container service modifications, dependency removals
 
 #### Low Severity (✅ Informational only)
 - **API**: New endpoints, optional parameter additions
 - **Database**: New tables, new optional columns, index additions
+- **Dependencies**: Patch version updates, new dependency additions
+- **Infrastructure**: Tag changes, metadata updates, non-critical resource changes
+- **Configuration**: New configuration keys, optional setting changes
 
 ## 📋 Examples
 
@@ -132,6 +154,67 @@ ALTER TABLE profiles ADD CONSTRAINT profiles_user_id_unique UNIQUE(user_id);
 - UNIQUE constraint added: profiles_user_id_unique
 
 🛡️ Recommendation: Consider data migration scripts before applying
+```
+
+### Example 3: Dependency Drift Detection
+
+**package.json Change:**
+```json
+// Before
+{
+  "dependencies": {
+    "express": "^4.18.0",
+    "lodash": "^4.17.10"
+  }
+}
+
+// After
+{
+  "dependencies": {
+    "express": "^5.0.0",  // Major version bump!
+    "lodash": "^4.17.10",
+    "event-stream": "^3.3.4"  // Known vulnerable package!
+  }
+}
+```
+
+**DriftControl Response:**
+```
+❌ HIGH SEVERITY: Critical dependency issues detected
+- MAJOR_VERSION_BUMP: express (4.x → 5.x) - breaking changes expected
+- SECURITY_VULNERABILITY: event-stream - known malicious package
+
+⚠️ MEDIUM SEVERITY: License compliance check needed
+- New dependency added: event-stream
+
+🔒 Security Alert: Remove event-stream immediately and audit dependencies
+```
+
+### Example 4: Infrastructure Drift Detection
+
+**Terraform Plan Changes:**
+```json
+{
+  "resource_changes": [{
+    "type": "aws_security_group_rule",
+    "change": {
+      "actions": ["delete"],
+      "before": { "cidr_blocks": ["10.0.0.0/8"] }
+    }
+  }]
+}
+```
+
+**DriftControl Response:**
+```
+❌ HIGH SEVERITY: Security configuration changes
+- SECURITY_GROUP_DELETION: Removing access rule for 10.0.0.0/8
+
+⚠️ Impact Analysis:
+- Potential connectivity issues for internal services
+- Review dependent resources before applying
+
+💡 Suggestion: Document security group changes in runbook
 ```
 
 ## 📊 Performance Benchmarks
@@ -193,7 +276,9 @@ driftcontrol-action/
 ├── src/
 │   ├── index.js              # Main entry point
 │   ├── openapi-analyzer.js   # OpenAPI drift analysis
-│   ├── sql-analyzer.js       # SQL migration analysis  
+│   ├── sql-analyzer.js       # SQL migration analysis
+│   ├── config-analyzer.js    # Configuration and dependency analysis
+│   ├── iac-analyzer.js       # Infrastructure as Code analysis
 │   ├── risk-scorer.js        # Risk assessment logic
 │   ├── comment-generator.js  # PR comment generation
 │   └── github-api.js         # GitHub API interactions
@@ -221,6 +306,27 @@ DriftControl will **NOT**:
 - ❌ Bypass security controls or authentication
 
 ## 📈 Advanced Features
+
+### Dependency Security Scanning
+
+DriftControl automatically detects known vulnerable packages and security issues:
+
+- **Known Malicious Packages**: event-stream, flatmap-stream
+- **Version-Specific Vulnerabilities**: eslint-scope@3.7.2
+- **Transitive Dependencies**: Analyzes package-lock.json for deep dependency issues
+- **Integrity Verification**: Detects checksum mismatches in lock files
+
+### Infrastructure Cost Analysis
+
+When using with Terraform or CloudFormation:
+
+```yaml
+- name: DriftControl with Cost Limits
+  uses: raulgsh/driftcontrol-action-public@v1
+  with:
+    terraform_plan_path: 'terraform/plan.json'
+    cost_threshold: '100'  # Block if monthly cost increase > $100
+```
 
 ### Override Policy
 
@@ -252,6 +358,14 @@ Configure different risk tolerances per environment:
   with:
     fail_on_medium: 'false'
 ```
+
+### Configuration Security
+
+DriftControl provides security-first configuration analysis:
+
+- **Redacted Sensitive Keys**: Automatically redacts passwords, tokens, API keys
+- **Key-Only Analysis**: Never exposes configuration values, only structure
+- **Feature Flag Tracking**: Monitors feature toggles for unexpected changes
 
 ## 🤝 Contributing
 

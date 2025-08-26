@@ -104,7 +104,7 @@ async function run() {
     }
     
     // Analyze Configuration drift (security-first: keys only)
-    if (configYamlGlob || featureFlagsPath || files.some(f => f.filename.endsWith('package.json') || f.filename.includes('docker-compose'))) {
+    if (configYamlGlob || featureFlagsPath || files.some(f => f.filename.endsWith('package.json') || f.filename.endsWith('package-lock.json') || f.filename.includes('docker-compose'))) {
       const configResults = await configAnalyzer.analyzeConfigFiles(
         files, octokit, owner, repo, context.payload.pull_request.head.sha,
         configYamlGlob, featureFlagsPath
@@ -112,6 +112,19 @@ async function run() {
       driftResults.push(...configResults.driftResults);
       hasHighSeverity = hasHighSeverity || configResults.hasHighSeverity;
       hasMediumSeverity = hasMediumSeverity || configResults.hasMediumSeverity;
+      
+      // Also analyze package-lock.json files specifically
+      const packageLockFiles = files.filter(f => f.filename.endsWith('package-lock.json'));
+      for (const file of packageLockFiles) {
+        const lockResult = await configAnalyzer.analyzePackageLock(
+          octokit, owner, repo, context.payload.pull_request.head.sha, file.filename
+        );
+        if (lockResult) {
+          driftResults.push(lockResult);
+          if (lockResult.severity === 'high') hasHighSeverity = true;
+          if (lockResult.severity === 'medium') hasMediumSeverity = true;
+        }
+      }
     }
     
     // Generate and post PR comment with results

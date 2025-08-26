@@ -68,6 +68,31 @@ describe('Risk Scorer', () => {
       expect(riskScorer.assessHighSeverity('DROP TABLE', [])).toBe(true);
       expect(riskScorer.assessHighSeverity('Drop Table', [])).toBe(true);
     });
+
+    test('should return true for MAJOR_VERSION_BUMP', () => {
+      expect(riskScorer.assessHighSeverity('MAJOR_VERSION_BUMP', [])).toBe(true);
+      expect(riskScorer.assessHighSeverity('detected major_version_bump', [])).toBe(true);
+    });
+
+    test('should return true for SECURITY_VULNERABILITY', () => {
+      expect(riskScorer.assessHighSeverity('SECURITY_VULNERABILITY', [])).toBe(true);
+      expect(riskScorer.assessHighSeverity('security_vulnerability found', [])).toBe(true);
+    });
+
+    test('should return true for CVE_DETECTED', () => {
+      expect(riskScorer.assessHighSeverity('CVE_DETECTED', [])).toBe(true);
+      expect(riskScorer.assessHighSeverity('cve_detected in dependencies', [])).toBe(true);
+    });
+
+    test('should return true for INTEGRITY_MISMATCH', () => {
+      expect(riskScorer.assessHighSeverity('INTEGRITY_MISMATCH', [])).toBe(true);
+      expect(riskScorer.assessHighSeverity('integrity_mismatch detected', [])).toBe(true);
+    });
+
+    test('should return true for TRANSITIVE_MAJOR_BUMP', () => {
+      expect(riskScorer.assessHighSeverity('TRANSITIVE_MAJOR_BUMP', [])).toBe(true);
+      expect(riskScorer.assessHighSeverity('transitive_major_bump found', [])).toBe(true);
+    });
   });
 
   describe('assessMediumSeverity', () => {
@@ -127,6 +152,36 @@ describe('Risk Scorer', () => {
       expect(riskScorer.assessMediumSeverity('type narrowing', [])).toBe(true);
       expect(riskScorer.assessMediumSeverity('TYPE NARROWING', [])).toBe(true);
       expect(riskScorer.assessMediumSeverity('Type Narrowing', [])).toBe(true);
+    });
+
+    test('should return true for MINOR_VERSION_BUMP', () => {
+      expect(riskScorer.assessMediumSeverity('MINOR_VERSION_BUMP', [])).toBe(true);
+      expect(riskScorer.assessMediumSeverity('minor_version_bump detected', [])).toBe(true);
+    });
+
+    test('should return true for LICENSE_CHANGE', () => {
+      expect(riskScorer.assessMediumSeverity('LICENSE_CHANGE', [])).toBe(true);
+      expect(riskScorer.assessMediumSeverity('license_change detected', [])).toBe(true);
+    });
+
+    test('should return true for DEPRECATED_PACKAGE', () => {
+      expect(riskScorer.assessMediumSeverity('DEPRECATED_PACKAGE', [])).toBe(true);
+      expect(riskScorer.assessMediumSeverity('deprecated_package warning', [])).toBe(true);
+    });
+
+    test('should return true for TRANSITIVE_DEPENDENCIES_CHANGED', () => {
+      expect(riskScorer.assessMediumSeverity('TRANSITIVE_DEPENDENCIES_CHANGED', [])).toBe(true);
+      expect(riskScorer.assessMediumSeverity('transitive_dependencies_changed', [])).toBe(true);
+    });
+
+    test('should return true for NEW_LOCK_FILE', () => {
+      expect(riskScorer.assessMediumSeverity('NEW_LOCK_FILE', [])).toBe(true);
+      expect(riskScorer.assessMediumSeverity('new_lock_file created', [])).toBe(true);
+    });
+
+    test('should return true for DEPENDENCY_REMOVED', () => {
+      expect(riskScorer.assessMediumSeverity('DEPENDENCY_REMOVED', [])).toBe(true);
+      expect(riskScorer.assessMediumSeverity('dependency_removed from project', [])).toBe(true);
     });
   });
 
