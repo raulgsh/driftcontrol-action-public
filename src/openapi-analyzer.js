@@ -1,6 +1,7 @@
 const core = require('@actions/core');
 const { diff } = require('@useoptic/openapi-utilities');
 const SwaggerParser = require('@apidevtools/swagger-parser');
+const yaml = require('js-yaml');
 const riskScorer = require('./risk-scorer');
 
 class OpenApiAnalyzer {
@@ -61,7 +62,7 @@ class OpenApiAnalyzer {
         
         // Parse and validate base spec
         baseSpec = await SwaggerParser.parse(JSON.parse(JSON.stringify(
-          baseSpecRaw.trim().startsWith('{') ? JSON.parse(baseSpecRaw) : require('js-yaml').parse(baseSpecRaw)
+          baseSpecRaw.trim().startsWith('{') ? JSON.parse(baseSpecRaw) : yaml.parse(baseSpecRaw)
         )));
         core.info(`Parsed base OpenAPI spec from: ${baseSpecPath}`);
       } catch (baseError) {
@@ -83,7 +84,7 @@ class OpenApiAnalyzer {
         
         // Parse and validate head spec
         headSpec = await SwaggerParser.parse(JSON.parse(JSON.stringify(
-          headSpecRaw.trim().startsWith('{') ? JSON.parse(headSpecRaw) : require('js-yaml').parse(headSpecRaw)
+          headSpecRaw.trim().startsWith('{') ? JSON.parse(headSpecRaw) : yaml.parse(headSpecRaw)
         )));
         core.info(`Parsed head OpenAPI spec from: ${actualOpenApiPath}`);
       } catch (headError) {

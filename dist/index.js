@@ -58510,6 +58510,7 @@ if (require.main === require.cache[eval('__filename')]) {
 const core = __nccwpck_require__(7484);
 const { diff } = __nccwpck_require__(9277);
 const SwaggerParser = __nccwpck_require__(5559);
+const yaml = __nccwpck_require__(4281);
 const riskScorer = __nccwpck_require__(6019);
 
 class OpenApiAnalyzer {
@@ -58570,7 +58571,7 @@ class OpenApiAnalyzer {
         
         // Parse and validate base spec
         baseSpec = await SwaggerParser.parse(JSON.parse(JSON.stringify(
-          baseSpecRaw.trim().startsWith('{') ? JSON.parse(baseSpecRaw) : (__nccwpck_require__(4281).parse)(baseSpecRaw)
+          baseSpecRaw.trim().startsWith('{') ? JSON.parse(baseSpecRaw) : yaml.parse(baseSpecRaw)
         )));
         core.info(`Parsed base OpenAPI spec from: ${baseSpecPath}`);
       } catch (baseError) {
@@ -58592,7 +58593,7 @@ class OpenApiAnalyzer {
         
         // Parse and validate head spec
         headSpec = await SwaggerParser.parse(JSON.parse(JSON.stringify(
-          headSpecRaw.trim().startsWith('{') ? JSON.parse(headSpecRaw) : (__nccwpck_require__(4281).parse)(headSpecRaw)
+          headSpecRaw.trim().startsWith('{') ? JSON.parse(headSpecRaw) : yaml.parse(headSpecRaw)
         )));
         core.info(`Parsed head OpenAPI spec from: ${actualOpenApiPath}`);
       } catch (headError) {
