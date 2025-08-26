@@ -1,8 +1,8 @@
 # DriftControl GitHub Action
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![GitHub Release](https://img.shields.io/github/release/yourusername/driftcontrol-action.svg)](https://github.com/yourusername/driftcontrol-action/releases)
-[![Node.js CI](https://github.com/yourusername/driftcontrol-action/workflows/Node.js%20CI/badge.svg)](https://github.com/yourusername/driftcontrol-action/actions)
+[![GitHub Release](https://img.shields.io/github/release/raulgsh/driftcontrol-action-public.svg)](https://github.com/raulgsh/driftcontrol-action-public/releases)
+[![Node.js CI](https://github.com/raulgsh/driftcontrol-action-public/workflows/Node.js%20CI/badge.svg)](https://github.com/raulgsh/driftcontrol-action-public/actions)
 
 **DriftControl** is a GitHub Action that automatically detects and analyzes API and database drift in pull requests. It helps prevent breaking changes by analyzing OpenAPI specifications and SQL migration files, providing detailed feedback on potential risks before merging.
 
