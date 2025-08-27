@@ -8,18 +8,21 @@
 
 ## ✨ Features
 
-- 🔍 **API Drift Detection**: Analyzes OpenAPI specification changes for breaking API modifications
-- 📊 **Database Schema Analysis**: Detects risky SQL operations in migration files
+- 🔍 **API Drift Detection**: Analyzes OpenAPI specification changes for breaking API modifications using @useoptic/openapi-utilities
+- 📊 **Database Schema Analysis**: Detects risky SQL operations in migration files with AST-based parsing via node-sql-parser
 - 📦 **Dependency Drift Detection**: Monitors package.json and package-lock.json for version changes, security vulnerabilities, and license modifications
 - 🏗️ **Infrastructure as Code Analysis**: Analyzes Terraform plans and CloudFormation templates for infrastructure drift
-- ⚙️ **Configuration Drift Detection**: Monitors configuration files, Docker Compose, and feature flags for changes
-- 🎯 **Smart Risk Scoring**: Categorizes changes by severity (Low, Medium, High)
-- 💬 **Intelligent PR Comments**: Provides detailed analysis and fix suggestions
-- 🤖 **Optional LLM Integration**: Enhanced plain English explanations with OpenAI or Anthropic
-- 🔗 **Cross-Layer Correlation**: Automatically detects relationships between different types of drift
+- ⚙️ **Configuration Drift Detection**: Monitors YAML/TOML configuration files, Docker Compose, and feature flags for changes
+- 🎯 **Smart Risk Scoring**: Categorizes changes by severity (Low, Medium, High) with transparent reasoning
+- 💬 **Intelligent PR Comments**: Provides detailed analysis with collapsible sections and fix suggestions
+- 🤖 **Optional LLM Integration**: Enhanced plain English explanations with OpenAI or Anthropic APIs
+- 🔗 **Cross-Layer Correlation**: Automatically detects relationships between different types of drift using multiple correlation strategies
+- 🔍 **Code Analysis Correlation**: Analyzes JavaScript/TypeScript code to find API-to-database relationships using AST parsing
+- 🚢 **Kubernetes Manifest Analysis**: Analyzes Kubernetes deployments for security risks and configuration drift
 - ⚙️ **Configurable Policies**: Customize blocking behavior based on risk levels
-- 🔄 **Rename Detection**: Handles file renames intelligently
+- 🔄 **Rename Detection**: Handles file renames intelligently for OpenAPI specs and database tables
 - 🛡️ **Override Support**: Emergency bypass with audit trail
+- 🔐 **Security-First**: Key-only analysis for configuration files, redacts sensitive values
 
 ## 🚀 Quick Start
 
@@ -62,6 +65,10 @@ jobs:
     cost_threshold: '100'
     fail_on_medium: 'true'
     override: 'false'
+    llm_provider: 'openai'
+    llm_api_key: ${{ secrets.OPENAI_API_KEY }}
+    llm_model: 'gpt-4'
+    correlation_config_path: '.github/driftcontrol.yml'
 ```
 
 ## ⚙️ Configuration
@@ -77,7 +84,7 @@ jobs:
 | `cloudformation_glob` | Glob pattern for CloudFormation templates | No | - |
 | `config_yaml_glob` | Glob pattern for configuration YAML files | No | - |
 | `feature_flags_path` | Path to feature flags file | No | - |
-| `cost_threshold` | Cost threshold for infrastructure changes | No | - |
+| `cost_threshold` | Cost threshold for infrastructure changes | No | `1000` |
 | `llm_provider` | LLM provider (openai or anthropic) | No | - |
 | `llm_api_key` | API key for LLM provider (use secrets) | No | - |
 | `llm_model` | Model name (gpt-4, claude-3-opus, etc) | No | - |
@@ -85,6 +92,9 @@ jobs:
 | `correlation_config_path` | Path to correlation configuration file | No | `.github/driftcontrol.yml` |
 | `fail_on_medium` | Block merges on medium-severity drift | No | `false` |
 | `override` | Bypass merge blocks (with audit trail) | No | `false` |
+| `vulnerability_provider` | Vulnerability detection provider (static, github) | No | `static` |
+| `kubernetes_glob` | Glob pattern for Kubernetes manifest files | No | `**/k8s/**/*.{yaml,yml}` |
+| `env_files` | Analyze .env files for secret changes | No | `true` |
 
 ### Risk Levels
 
@@ -197,7 +207,35 @@ ALTER TABLE profiles ADD CONSTRAINT profiles_user_id_unique UNIQUE(user_id);
 🔒 Security Alert: Remove event-stream immediately and audit dependencies
 ```
 
-### Example 4: Infrastructure Drift Detection
+### Example 4: Kubernetes Security Analysis
+
+**Kubernetes Deployment:**
+```yaml
+# Deployment with security risks
+apiVersion: apps/v1
+kind: Deployment
+spec:
+  template:
+    spec:
+      hostNetwork: true  # Security risk detected
+      containers:
+      - name: app
+        securityContext:
+          privileged: true  # Security risk detected
+        # Missing resource limits - risk detected
+```
+
+**DriftControl Response:**
+```
+❌ HIGH SEVERITY: Kubernetes security risks detected
+- K8S_HOST_NETWORK_ENABLED: Host network access enabled
+- K8S_PRIVILEGED_CONTAINER: Privileged container detected  
+- K8S_NO_RESOURCE_LIMITS: Missing resource limits
+
+🛡️ Security Alert: Review container security policies before deployment
+```
+
+### Example 5: Infrastructure Drift Detection
 
 **Terraform Plan Changes:**
 ```json
@@ -224,9 +262,33 @@ ALTER TABLE profiles ADD CONSTRAINT profiles_user_id_unique UNIQUE(user_id);
 💡 Suggestion: Document security group changes in runbook
 ```
 
+### Example 6: Environment Configuration Analysis
+
+**.env File Changes:**
+```bash
+# Before
+DATABASE_URL=postgres://localhost/app
+API_KEY=secret123
+
+# After  
+DATABASE_URL=postgres://prod-server/app  # Configuration change detected
+NEW_SECRET_TOKEN=xyz789                  # New secret key detected
+# API_KEY removed                        # Secret removal detected
+```
+
+**DriftControl Response:**
+```
+⚠️ MEDIUM SEVERITY: Configuration drift detected
+- SECRET_REMOVED: API_KEY (potential service disruption)
+- SECRET_ADDED: NEW_SECRET_TOKEN (review access requirements)
+- CONFIG_CHANGED: DATABASE_URL (environment target change)
+
+🔐 Security Note: Key values redacted in analysis for security
+```
+
 ## 🔗 Configuration-Driven Correlation
 
-DriftControl can automatically detect relationships between different components (API ↔ Database, Infrastructure ↔ Config), but sometimes you know these relationships better than any heuristic can determine. You can now define explicit correlations in a configuration file.
+DriftControl automatically detects relationships between different components using multiple correlation strategies (Entity, Operation, Infrastructure, Dependency, Temporal, and Code Analysis). You can enhance this with explicit correlation rules.
 
 ### Setting Up Correlation Rules
 
@@ -237,14 +299,14 @@ Create a file at `.github/driftcontrol.yml` in your repository:
 correlation_rules:
   # Map API endpoints to database tables
   - type: api_to_db
-    api_endpoint: /v1/users/{userId}
-    db_table: application_users
+    source: /v1/users/{userId}
+    target: application_users
     description: "Maps the public user API to the internal user table"
   
   # Map Infrastructure resources to configuration files
   - type: iac_to_config
-    iac_resource_id: aws_lambda_function.user_processor
-    config_file: config/user-service.yml
+    source: aws_lambda_function.user_processor
+    target: config/user-service.yml
     description: "Lambda function configuration"
   
   # Ignore known irrelevant correlations to reduce noise
@@ -262,6 +324,17 @@ correlation_rules:
 4. **Severity Escalation**: Correlated changes automatically increase severity levels
 5. **Root Cause Analysis**: Better identify which changes trigger cascading effects
 
+### Correlation Strategies
+
+DriftControl uses multiple correlation strategies:
+
+- **Entity Correlation**: Matches table names, API endpoints, and resource names using fuzzy matching
+- **Operation Correlation**: Correlates CRUD operations across API endpoints and database operations
+- **Infrastructure Correlation**: Links infrastructure resources to configuration and application components
+- **Dependency Correlation**: Tracks how dependency changes affect APIs and databases
+- **Temporal Correlation**: Identifies changes that happen together in time
+- **Code Analysis Correlation**: Analyzes JavaScript/TypeScript code using AST parsing to trace function calls and identify database operations, linking API endpoints to database usage patterns through call graph analysis
+
 ### Example Impact
 
 When DriftControl detects changes in both `/v1/users/{userId}` API endpoint and the `application_users` table, it will:
@@ -270,11 +343,9 @@ When DriftControl detects changes in both `/v1/users/{userId}` API endpoint and 
 - Provide context about the cross-layer impact
 - Help reviewers understand the full scope of changes
 
-See [.github/driftcontrol.yml.example](.github/driftcontrol.yml.example) for a complete configuration example.
-
 ## 📊 Performance Benchmarks
 
-DriftControl is optimized for speed and efficiency:
+DriftControl is optimized for speed and efficiency with parallel analyzer execution:
 
 | Metric | Target | Actual | Status |
 |--------|--------|--------|--------|
@@ -330,12 +401,16 @@ npm start
 driftcontrol-action/
 ├── src/
 │   ├── index.js              # Main entry point
-│   ├── openapi-analyzer.js   # OpenAPI drift analysis
-│   ├── sql-analyzer.js       # SQL migration analysis
-│   ├── config-analyzer.js    # Configuration and dependency analysis
-│   ├── iac-analyzer.js       # Infrastructure as Code analysis
-│   ├── risk-scorer.js        # Risk assessment logic
-│   ├── comment-generator.js  # PR comment generation
+│   ├── analyzers/            # Analysis modules
+│   │   ├── openapi/          # OpenAPI drift analysis
+│   │   ├── sql/              # SQL migration analysis
+│   │   ├── config/           # Configuration and dependency analysis
+│   │   └── iac/              # Infrastructure as Code analysis
+│   ├── scoring/              # Risk assessment logic
+│   ├── commenting/           # PR comment generation
+│   ├── correlation/          # Cross-layer correlation analysis
+│   ├── risk-scorer.js        # Risk assessment entry point
+│   ├── comment-generator.js  # Comment generation entry point
 │   └── github-api.js         # GitHub API interactions
 ├── __tests__/                # Test files
 ├── action.yml               # GitHub Action metadata
@@ -440,6 +515,8 @@ DriftControl provides security-first configuration analysis:
 - **Redacted Sensitive Keys**: Automatically redacts passwords, tokens, API keys
 - **Key-Only Analysis**: Never exposes configuration values, only structure
 - **Feature Flag Tracking**: Monitors feature toggles for unexpected changes
+- **.env and .properties Support**: Analyzes environment and properties files with key-only security approach
+- **Kubernetes Security Analysis**: Detects privileged containers, host network access, missing resource limits
 
 ### Cross-Layer Correlation Analysis
 
@@ -511,10 +588,9 @@ Found a bug or have a feature request? Please [open an issue](https://github.com
 
 ## 📚 Documentation
 
-- [API Reference](docs/api-reference.md)
-- [Configuration Guide](docs/configuration.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [FAQ](docs/faq.md)
+- [Technical Specification](SPEC.md)
+- [Architecture Guide](ARCHITECTURE.md)
+- [Configuration Template](CC_TEMPLATE.md)
 
 ## 📄 License
 
@@ -531,6 +607,8 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 - [@useoptic/openapi-utilities](https://www.npmjs.com/package/@useoptic/openapi-utilities) for OpenAPI diff analysis
 - [@apidevtools/swagger-parser](https://www.npmjs.com/package/@apidevtools/swagger-parser) for OpenAPI validation
+- [node-sql-parser](https://www.npmjs.com/package/node-sql-parser) for SQL AST parsing
+- [dbgate-query-splitter](https://www.npmjs.com/package/dbgate-query-splitter) for SQL statement splitting
 - [@actions/github](https://www.npmjs.com/package/@actions/github) for GitHub API integration
 
 ---

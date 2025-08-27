@@ -86,14 +86,61 @@ async function correlateAcrossLayers(driftResults, files, correlationConfig = nu
     strategySignals.set(strategy.name, signals);
   }
   
-  // Aggregate
-  return aggregateCorrelations(
+  // Aggregate correlations
+  const correlations = aggregateCorrelations(
     userCorrelations, 
     strategySignals, 
     strategiesByName,
     processedPairs, 
     correlationConfig
   );
+  
+  // Build correlation graph if enabled
+  if (correlationConfig?.graph?.enabled !== false && correlations.length > 0) {
+    const { buildCorrelationGraph } = require('./engine');
+    const { impactedNodes, rootCauses, blastRadius } = require('./utils/query');
+    
+    const graph = buildCorrelationGraph(expandedResults, correlations, correlationConfig);
+    
+    if (graph) {
+      // Run impact analysis
+      const impact = impactedNodes(graph, {
+        maxDepth: correlationConfig?.graph?.max_depth || 3,
+        minConfidence: correlationConfig?.thresholds?.correlate_min || 0.55,
+        pathAggregation: correlationConfig?.graph?.path_aggregation || 'min'
+      });
+      
+      const rootCauseAnalysis = rootCauses(graph, {
+        targets: impact,
+        minConfidence: correlationConfig?.thresholds?.correlate_min || 0.55
+      });
+      
+      const radiusMetrics = blastRadius(graph, impact, correlationConfig?.graph);
+      
+      // Attach graph data to results for scoring and rendering
+      expandedResults.forEach(result => {
+        const id = result.artifactId || getArtifactId(result);
+        if (impact.has(id)) {
+          result.impactPath = impact.get(id);
+          result.graphMetrics = {
+            confidence: impact.get(id).confidence,
+            depth: impact.get(id).depth,
+            isRootCause: rootCauseAnalysis.causes.some(c => c.nodeId === id)
+          };
+        }
+      });
+      
+      // Store graph data for downstream use (scoring, rendering)
+      correlations._graph = graph;
+      correlations._impact = impact;
+      correlations._rootCauses = rootCauseAnalysis;
+      correlations._blastRadius = radiusMetrics;
+      
+      core.info(`Graph analysis: ${impact.size} impacted, ${rootCauseAnalysis.causes.length} root causes, blast radius: ${radiusMetrics.total}`);
+    }
+  }
+  
+  return correlations;
 }
 
 module.exports = {

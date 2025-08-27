@@ -7,7 +7,7 @@ const { buildCorrelationGraph, shortenPath } = require('./format');
  */
 
 // Helper function to generate comment body
-async function generateCommentBody(driftResults, isOverride, llmConfig = null) {
+async function generateCommentBody(driftResults, isOverride, llmConfig = null, correlations = null) {
   const severityEmojis = {
     high: '🔴',
     medium: '🟡', 
@@ -53,8 +53,8 @@ async function generateCommentBody(driftResults, isOverride, llmConfig = null) {
   if (hasCorrelations) {
     comment += '**🔗 Cross-Layer Correlations Detected**:\n\n';
     
-    // Build simple ASCII graph
-    const graph = buildCorrelationGraph(driftResults);
+    // Build enhanced ASCII graph with correlation data
+    const graph = buildCorrelationGraph(driftResults, correlations);
     if (graph && graph !== 'No correlations found') {
       comment += '```\n' + graph + '\n```\n\n';
     }

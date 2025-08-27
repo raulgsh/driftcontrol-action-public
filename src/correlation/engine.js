@@ -222,8 +222,52 @@ function aggregateCorrelations(userCorrelations, strategySignals, strategiesByNa
   return Array.from(correlationMap.values());
 }
 
+// Build correlation graph from expanded results and correlations
+function buildCorrelationGraph(expandedResults, correlations, config = {}) {
+  const { ArtifactGraph } = require('./utils/graph');
+  
+  // Safety check before building
+  const nodeLimit = config?.graph?.node_limit || 2000;
+  const edgeLimit = config?.graph?.edge_limit || 6000;
+  
+  if (expandedResults.length > nodeLimit || correlations.length > edgeLimit) {
+    core.warning(`Graph limits would be exceeded: ${expandedResults.length} nodes (limit: ${nodeLimit}), ${correlations.length} edges (limit: ${edgeLimit})`);
+    return null;
+  }
+  
+  const graph = new ArtifactGraph();
+  
+  core.debug(`Building correlation graph with ${expandedResults.length} nodes and ${correlations.length} edges`);
+  
+  // Add all nodes from expanded results
+  expandedResults.forEach(result => {
+    graph.upsertNode(result);
+  });
+  
+  // Add edges from correlations
+  correlations.forEach(corr => {
+    const srcId = corr.source.artifactId || getArtifactId(corr.source);
+    const dstId = corr.target.artifactId || getArtifactId(corr.target);
+    
+    graph.addEdge({
+      src: srcId,
+      dst: dstId,
+      type: corr.relationship || 'related',
+      confidence: corr.finalScore || corr.confidence || 0,
+      provenance: corr.userDefined ? 'explicit' : (corr.strategies?.[0] || 'aggregated'),
+      evidence: corr.evidence || []
+    });
+  });
+  
+  const stats = graph.stats();
+  core.info(`Built correlation graph: ${stats.nodeCount} nodes, ${stats.edgeCount} edges, ${stats.changedNodes} changed`);
+  
+  return graph;
+}
+
 module.exports = {
   applyUserDefinedRules,
   selectCandidatePairs,
-  aggregateCorrelations
+  aggregateCorrelations,
+  buildCorrelationGraph
 };

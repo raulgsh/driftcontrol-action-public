@@ -50,23 +50,42 @@ function assessCorrelationImpact(result, correlations, config) {
   
   const impactCount = hardLinks.length;
   
-  // Calculate cascade impact (how many other components are affected)
-  const affectedComponents = new Set();
-  hardLinks.forEach(c => {
-    const sourceId = c.source.artifactId || getArtifactId(c.source);
-    const targetId = c.target.artifactId || getArtifactId(c.target);
-    const otherId = sourceId === resultId ? targetId : sourceId;
-    affectedComponents.add(otherId);
-  });
+  // Calculate cascade impact - prefer graph-based metrics when available
+  let cascadeImpact = 0;
+  let graphMetrics = null;
   
-  const cascadeImpact = affectedComponents.size;
+  if (correlations._blastRadius && result.graphMetrics) {
+    // Use graph-based blast radius calculation
+    cascadeImpact = correlations._blastRadius.total;
+    graphMetrics = {
+      blastRadius: correlations._blastRadius.total,
+      riskScore: correlations._blastRadius.riskScore,
+      pathConfidence: result.graphMetrics.confidence,
+      pathDepth: result.graphMetrics.depth,
+      isRootCause: result.graphMetrics.isRootCause,
+      impactByKind: correlations._blastRadius.byKind
+    };
+    
+    core.debug(`Using graph metrics for ${resultId}: blast radius ${cascadeImpact}, risk score ${graphMetrics.riskScore.toFixed(2)}`);
+  } else {
+    // Fallback to legacy cascade calculation
+    const affectedComponents = new Set();
+    hardLinks.forEach(c => {
+      const sourceId = c.source.artifactId || getArtifactId(c.source);
+      const targetId = c.target.artifactId || getArtifactId(c.target);
+      const otherId = sourceId === resultId ? targetId : sourceId;
+      affectedComponents.add(otherId);
+    });
+    cascadeImpact = affectedComponents.size;
+  }
   
   // Store correlation details in result
   result.correlationImpact = {
     hard: hardLinks.length,
     soft: softLinks.length,
     cascade: cascadeImpact,
-    correlations: relevantCorrelations
+    correlations: relevantCorrelations,
+    graph: graphMetrics  // Include graph metrics if available
   };
   
   // Check if this is a critical security issue that should never be downgraded
@@ -116,27 +135,72 @@ function assessCorrelationImpact(result, correlations, config) {
     });
   }
   
-  // Apply standard heuristic-based severity upgrades (if not already upgraded by user rules)
+  // Apply graph-enhanced severity upgrades (if not already upgraded by user rules)
   if (result.severity === originalSeverity) {
-    if (cascadeImpact >= 3 && result.severity === 'medium') {
-      result.severity = 'high';
-      result.reasoning = [...(result.reasoning || []), 
-        `Upgraded from medium to high severity: affects ${cascadeImpact} cross-layer components`
-      ];
-      core.info(`Correlation impact: upgraded ${result.file || result.type} from medium to high (${cascadeImpact} components affected)`);
-    } else if (cascadeImpact >= 2 && result.severity === 'low') {
-      result.severity = 'medium';
-      result.reasoning = [...(result.reasoning || []), 
-        `Upgraded from low to medium severity: affects ${cascadeImpact} cross-layer components`
-      ];
-      core.info(`Correlation impact: upgraded ${result.file || result.type} from low to medium (${cascadeImpact} components affected)`);
-    } else if (impactCount >= 4 && result.severity !== 'high') {
-      // Many correlations even if not all different components
-      result.severity = 'high';
-      result.reasoning = [...(result.reasoning || []), 
-        `Upgraded to high severity: ${impactCount} strong cross-layer correlations detected`
-      ];
-      core.info(`Correlation impact: upgraded ${result.file || result.type} to high (${impactCount} strong correlations)`);
+    // Use graph metrics for more sophisticated severity assessment
+    if (graphMetrics) {
+      // Root cause nodes have higher impact weight
+      if (graphMetrics.isRootCause && result.severity === 'low') {
+        result.severity = 'medium';
+        result.reasoning = [...(result.reasoning || []), 
+          `Upgraded from low to medium: identified as root cause affecting ${graphMetrics.blastRadius} components`
+        ];
+        core.info(`Graph analysis: upgraded ${resultId} to medium (root cause)`);
+      } else if (graphMetrics.isRootCause && result.severity === 'medium' && graphMetrics.blastRadius >= 3) {
+        result.severity = 'high';
+        result.reasoning = [...(result.reasoning || []), 
+          `Upgraded from medium to high: root cause with blast radius ${graphMetrics.blastRadius}`
+        ];
+        core.info(`Graph analysis: upgraded ${resultId} to high (root cause with wide impact)`);
+      }
+      
+      // High-confidence paths suggest strong dependencies
+      if (graphMetrics.pathConfidence >= 0.9 && cascadeImpact >= 2 && result.severity === 'low') {
+        result.severity = 'medium';
+        result.reasoning = [...(result.reasoning || []), 
+          `Upgraded from low to medium: high-confidence path (${Math.round(graphMetrics.pathConfidence * 100)}%) affects ${cascadeImpact} components`
+        ];
+        core.info(`Graph analysis: upgraded ${resultId} to medium (high-confidence path)`);
+      }
+      
+      // Graph risk score threshold
+      if (graphMetrics.riskScore >= 0.7 && result.severity !== 'high') {
+        result.severity = 'high';
+        result.reasoning = [...(result.reasoning || []), 
+          `Upgraded to high severity: graph risk score ${graphMetrics.riskScore.toFixed(2)} (affects critical systems)`
+        ];
+        core.info(`Graph analysis: upgraded ${resultId} to high (risk score ${graphMetrics.riskScore.toFixed(2)})`);
+      }
+      
+      // Add graph-based impact details
+      if (Object.keys(graphMetrics.impactByKind).length > 1) {
+        const kinds = Object.entries(graphMetrics.impactByKind)
+          .map(([k, v]) => `${k}:${v}`)
+          .join(', ');
+        result.reasoning.push(`Cross-layer impact: ${kinds}`);
+      }
+    } else {
+      // Fallback to legacy cascade logic
+      if (cascadeImpact >= 3 && result.severity === 'medium') {
+        result.severity = 'high';
+        result.reasoning = [...(result.reasoning || []), 
+          `Upgraded from medium to high severity: affects ${cascadeImpact} cross-layer components`
+        ];
+        core.info(`Correlation impact: upgraded ${result.file || result.type} from medium to high (${cascadeImpact} components affected)`);
+      } else if (cascadeImpact >= 2 && result.severity === 'low') {
+        result.severity = 'medium';
+        result.reasoning = [...(result.reasoning || []), 
+          `Upgraded from low to medium severity: affects ${cascadeImpact} cross-layer components`
+        ];
+        core.info(`Correlation impact: upgraded ${result.file || result.type} from low to medium (${cascadeImpact} components affected)`);
+      } else if (impactCount >= 4 && result.severity !== 'high') {
+        // Many correlations even if not all different components
+        result.severity = 'high';
+        result.reasoning = [...(result.reasoning || []), 
+          `Upgraded to high severity: ${impactCount} strong cross-layer correlations detected`
+        ];
+        core.info(`Correlation impact: upgraded ${result.file || result.type} to high (${impactCount} strong correlations)`);
+      }
     }
   }
   

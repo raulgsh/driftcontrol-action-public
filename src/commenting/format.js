@@ -2,8 +2,14 @@
  * Formatting utilities for comments
  */
 
-// Build ASCII correlation graph
-function buildCorrelationGraph(driftResults) {
+// Build ASCII correlation graph - enhanced with graph data
+function buildCorrelationGraph(driftResults, correlations) {
+  // Use new graph structure if available
+  if (correlations && correlations._graph && correlations._impact) {
+    return renderGraphAscii(correlations._graph, correlations._impact, correlations._rootCauses);
+  }
+  
+  // Fallback to legacy rendering
   let graph = 'Drift Correlation Graph:\n\n';
   const drawnRelationships = new Set();
   
@@ -36,6 +42,82 @@ function buildCorrelationGraph(driftResults) {
   }
   
   return graph;
+}
+
+// Enhanced ASCII rendering using graph data
+function renderGraphAscii(graph, impact, rootCauses) {
+  const lines = [];
+  const rendered = new Set();
+  
+  // Show summary first
+  const stats = graph.stats();
+  const impactSize = impact ? impact.size : 0;
+  lines.push(`Impact Analysis: ${impactSize} nodes affected from ${stats.changedNodes} changes`);
+  lines.push('');
+  
+  // Show root causes prominently
+  if (rootCauses && rootCauses.causes && rootCauses.causes.length > 0) {
+    lines.push('🎯 Root Causes:');
+    rootCauses.causes.slice(0, 3).forEach(cause => {
+      const node = graph.getNode(cause.nodeId);
+      const coverage = Math.round(cause.coverageScore * 100);
+      const nodeDesc = node ? `${node.kind}:${shortenPath(node.meta.file || cause.nodeId)}` : cause.nodeId;
+      lines.push(`  ⚡ ${nodeDesc} (covers ${coverage}% of impact)`);
+    });
+    lines.push('');
+  }
+  
+  // Show top impact paths (from changed nodes)
+  if (impact && impact.size > 0) {
+    lines.push('🔗 Impact Paths:');
+    
+    // Sort impacts by confidence and limit display
+    const sortedImpacts = Array.from(impact.entries())
+      .filter(([nodeId, data]) => data.path && data.path.length > 0)
+      .sort((a, b) => b[1].confidence - a[1].confidence)
+      .slice(0, 8); // Limit to prevent overwhelming output
+    
+    sortedImpacts.forEach(([nodeId, data]) => {
+      const targetNode = graph.getNode(nodeId);
+      const conf = Math.round(data.confidence * 100);
+      const targetDesc = targetNode ? 
+        `${targetNode.kind}:${shortenPath(targetNode.meta.file || nodeId)}` : 
+        nodeId;
+      
+      lines.push(`  ${targetDesc} (${conf}% confidence)`);
+      
+      // Show path (simplified to first 2 hops to save space)
+      const pathPreview = data.path.slice(0, 2);
+      pathPreview.forEach((edge, i) => {
+        const srcNode = graph.getNode(edge.src);
+        const edgeConf = Math.round(edge.confidence * 100);
+        const indent = '    ' + '  '.repeat(i);
+        const srcDesc = srcNode ? 
+          `${srcNode.kind}:${shortenPath(srcNode.meta.file || edge.src)}` : 
+          edge.src;
+        
+        if (i === 0) {
+          lines.push(`${indent}├─ via ${srcDesc}`);
+        }
+        lines.push(`${indent}└─${edge.type}(${edgeConf}%)→`);
+      });
+      
+      if (data.path.length > 2) {
+        lines.push(`      ... (+${data.path.length - 2} more hops)`);
+      }
+      lines.push('');
+    });
+  }
+  
+  // Truncate if too long
+  const maxLines = 25;
+  if (lines.length > maxLines) {
+    const truncated = lines.slice(0, maxLines - 1);
+    truncated.push(`... (${lines.length - maxLines + 1} more lines truncated for readability)`);
+    return truncated.join('\n');
+  }
+  
+  return lines.join('\n') || 'No impact paths found';
 }
 
 // Helper to shorten file paths for readability

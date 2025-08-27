@@ -187,9 +187,10 @@ async function run() {
     }
     
     // Cross-layer correlation analysis
+    let correlations = [];
     if (driftResults.length > 1) {
       // Build correlation graph from existing results (pass correlation config)
-      const correlations = await correlateAcrossLayers(driftResults, files, correlationConfig);
+      correlations = await correlateAcrossLayers(driftResults, files, correlationConfig);
       
       // Identify root causes
       const rootCauses = identifyRootCauses(correlations, driftResults);
@@ -228,7 +229,7 @@ async function run() {
     
     // Generate and post PR comment with results
     if (driftResults.length > 0) {
-      const commentBody = await generateCommentBody(driftResults, override === 'true', llmConfig);
+      const commentBody = await generateCommentBody(driftResults, override === 'true', llmConfig, correlations);
       await postOrUpdateComment(octokit, owner, repo, pullNumber, commentBody);
     } else {
       core.info('No drift detected');
