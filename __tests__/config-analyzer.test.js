@@ -217,8 +217,13 @@ volumes:
           data: { content: Buffer.from(baseCompose).toString('base64') }
         });
       
+      const pullRequest = {
+        head: { sha: 'head-sha' },
+        base: { sha: 'base-sha' }
+      };
+      
       const result = await analyzer.analyzeConfigFiles(
-        files, mockOctokit, 'owner', 'repo', 'sha123', '', ''
+        files, mockOctokit, 'owner', 'repo', pullRequest, '', ''
       );
       
       expect(result.driftResults.length).toBe(1);
