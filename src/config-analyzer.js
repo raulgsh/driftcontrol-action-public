@@ -1,6 +1,7 @@
 const core = require('@actions/core');
 const yaml = require('yaml');
 const riskScorer = require('./risk-scorer');
+const { globToRegex } = require('./comment-generator');
 
 class ConfigAnalyzer {
   constructor() {
@@ -137,24 +138,8 @@ class ConfigAnalyzer {
   async analyzeYamlConfigs(files, octokit, owner, repo, pullRequestHeadSha, pullRequestBaseSha, configYamlGlob) {
     const results = [];
     
-    // Convert glob to regex (reuse pattern from sql-analyzer)
-    let globRegexPattern;
-    if (configYamlGlob.includes('**/')) {
-      const parts = configYamlGlob.split('**/');
-      const prefix = parts[0].replace(/\./g, '\\.');
-      const suffix = parts[1]
-        .replace(/\./g, '\\.')
-        .replace(/\*/g, '[^/]*');
-      globRegexPattern = `^${prefix}.*${suffix}$`;
-    } else {
-      globRegexPattern = configYamlGlob
-        .replace(/\./g, '\\.')
-        .replace(/\*\*/g, '.*')
-        .replace(/\*/g, '[^/]*')
-        + '$';
-    }
-    
-    const configPattern = new RegExp(globRegexPattern);
+    // Convert glob to regex using shared utility
+    const configPattern = globToRegex(configYamlGlob);
     const configFiles = files.filter(file => configPattern.test(file.filename));
 
     for (const file of configFiles) {

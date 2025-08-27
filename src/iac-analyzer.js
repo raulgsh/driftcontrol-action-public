@@ -1,6 +1,7 @@
 const core = require('@actions/core');
 const yaml = require('yaml');
 const riskScorer = require('./risk-scorer');
+const { globToRegex } = require('./comment-generator');
 
 class IaCAnalyzer {
   constructor() {
@@ -205,24 +206,9 @@ class IaCAnalyzer {
   async analyzeCloudFormationTemplates(files, octokit, owner, repo, pullRequest, cloudformationGlob, costThreshold) {
     const results = [];
     
-    // Convert glob to regex (reuse pattern from sql-analyzer)
-    let globRegexPattern;
-    if (cloudformationGlob.includes('**/')) {
-      const parts = cloudformationGlob.split('**/');
-      const prefix = parts[0].replace(/\./g, '\\.');
-      const suffix = parts[1]
-        .replace(/\./g, '\\.')
-        .replace(/\*/g, '[^/]*');
-      globRegexPattern = `^${prefix}.*${suffix}$`;
-    } else {
-      globRegexPattern = cloudformationGlob
-        .replace(/\./g, '\\.')
-        .replace(/\*\*/g, '.*')
-        .replace(/\*/g, '[^/]*')
-        + '$';
-    }
-    
-    const cfPattern = new RegExp(globRegexPattern);
+    // Convert glob to regex using shared utility
+    const cfPattern = globToRegex(cloudformationGlob);
+    const globRegexPattern = cfPattern.source; // For logging purposes
     const cfFiles = files.filter(file => cfPattern.test(file.filename));
     
     core.info(`CloudFormation glob: ${cloudformationGlob} -> regex: ${globRegexPattern}`);

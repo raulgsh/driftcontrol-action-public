@@ -1,6 +1,7 @@
 const core = require('@actions/core');
 const { Parser } = require('node-sql-parser');
 const riskScorer = require('./risk-scorer');
+const { globToRegex } = require('./comment-generator');
 
 class SqlAnalyzer {
   constructor() {
@@ -35,28 +36,9 @@ class SqlAnalyzer {
     let hasHighSeverity = false;
     let hasMediumSeverity = false;
 
-    // Process files for drift detection - convert glob to proper regex
-    // Transform glob patterns like "migrations/**/*.sql" to regex
-    // Special case for common pattern: **/* means "any file in this dir or subdirs"
-    let globRegexPattern;
-    if (sqlGlob.includes('**/')) {
-      // For patterns like "migrations/**/*.sql", match anything under migrations/
-      const parts = sqlGlob.split('**/');
-      const prefix = parts[0].replace(/\./g, '\\.');
-      const suffix = parts[1]
-        .replace(/\./g, '\\.')
-        .replace(/\*/g, '[^/]*');
-      // Match prefix, then any path (including no subdirs), then suffix
-      globRegexPattern = `^${prefix}.*${suffix}$`;
-    } else {
-      // Fallback for other patterns
-      globRegexPattern = sqlGlob
-        .replace(/\./g, '\\.')
-        .replace(/\*\*/g, '.*')
-        .replace(/\*/g, '[^/]*')
-        + '$';
-    }
-    const sqlPattern = new RegExp(globRegexPattern);
+    // Process files for drift detection - use shared glob to regex conversion
+    const sqlPattern = globToRegex(sqlGlob);
+    const globRegexPattern = sqlPattern.source; // For logging purposes
     
     // Check for SQL migration files in changed files
     const changedSqlFiles = files.filter(file => sqlPattern.test(file.filename));
@@ -238,18 +220,16 @@ class SqlAnalyzer {
     if (keyword === 'table') {
       const tableName = this.extractTableName(stmt);
       if (tableName) {
-        const tableNameStr = typeof tableName === 'string' ? tableName : String(tableName);
-        droppedTables.add(tableNameStr.toLowerCase());
-        sqlChanges.push(`DROP TABLE: ${tableNameStr}`);
-        core.info(`Found DROP TABLE: ${tableNameStr}`);
+        droppedTables.add(tableName.toLowerCase());
+        sqlChanges.push(`DROP TABLE: ${tableName}`);
+        core.info(`Found DROP TABLE: ${tableName}`);
       }
     } else if (keyword === 'column' && stmt.column) {
       const columnName = stmt.column.column || stmt.column;
       const tableName = this.extractTableName(stmt);
       if (tableName && columnName) {
-        const tableNameStr = typeof tableName === 'string' ? tableName : String(tableName);
-        if (!droppedColumns.has(tableNameStr)) droppedColumns.set(tableNameStr, []);
-        droppedColumns.get(tableNameStr).push(columnName);
+        if (!droppedColumns.has(tableName)) droppedColumns.set(tableName, []);
+        droppedColumns.get(tableName).push(columnName);
         sqlChanges.push(`DROP COLUMN: ${columnName}`);
         core.info(`Found DROP COLUMN: ${columnName} from table ${tableNameStr}`);
       }
@@ -265,9 +245,8 @@ class SqlAnalyzer {
     if (keyword === 'table') {
       const tableName = this.extractTableName(stmt);
       if (tableName) {
-        const tableNameStr = typeof tableName === 'string' ? tableName : String(tableName);
-        createdTables.add(tableNameStr.toLowerCase());
-        core.info(`Found CREATE TABLE: ${tableNameStr}`);
+        createdTables.add(tableName.toLowerCase());
+        core.info(`Found CREATE TABLE: ${tableName}`);
       }
     }
   }
@@ -284,8 +263,10 @@ class SqlAnalyzer {
           const resource = expr.resource?.toLowerCase();
           if (resource === 'column' && expr.column) {
             const columnName = expr.column.column || expr.column;
-            if (!droppedColumns.has(tableName)) droppedColumns.set(tableName, []);
-            droppedColumns.get(tableName).push(columnName);
+            if (tableName) {
+              if (!droppedColumns.has(tableName)) droppedColumns.set(tableName, []);
+              droppedColumns.get(tableName).push(columnName);
+            }
             sqlChanges.push(`DROP COLUMN: ${columnName}`);
           } else if (resource === 'constraint' && expr.name) {
             sqlChanges.push(`DROP CONSTRAINT: ${expr.name}`);
@@ -294,8 +275,10 @@ class SqlAnalyzer {
           const resource = expr.resource?.toLowerCase();
           if (resource === 'column' && expr.column) {
             const columnName = expr.column.column || expr.column.name || expr.column;
-            if (!addedColumns.has(tableName)) addedColumns.set(tableName, []);
-            addedColumns.get(tableName).push(columnName);
+            if (tableName) {
+              if (!addedColumns.has(tableName)) addedColumns.set(tableName, []);
+              addedColumns.get(tableName).push(columnName);
+            }
             
             // Check for NOT NULL constraint
             if (expr.column.nullable === false || expr.column.not_null) {
@@ -319,18 +302,34 @@ class SqlAnalyzer {
 
   // Extract table name from various statement types
   extractTableName(stmt) {
+    let nameNode = null;
+    
+    // Extract the node from either table or name property
     if (stmt.table) {
-      if (Array.isArray(stmt.table)) {
-        return stmt.table[0]?.table || stmt.table[0]?.name || stmt.table[0];
-      }
-      return stmt.table.table || stmt.table.name || stmt.table;
+      nameNode = Array.isArray(stmt.table) ? stmt.table[0] : stmt.table;
+    } else if (stmt.name) {
+      nameNode = Array.isArray(stmt.name) ? stmt.name[0] : stmt.name;
     }
-    if (stmt.name) {
-      if (Array.isArray(stmt.name)) {
-        return stmt.name[0]?.value || stmt.name[0];
-      }
-      return stmt.name.value || stmt.name;
+    
+    if (!nameNode) {
+      return null;
     }
+    
+    // Try to extract string from known properties
+    const tableName = nameNode.table || nameNode.name || nameNode.value;
+    
+    // Return only if it's a string
+    if (typeof tableName === 'string') {
+      return tableName;
+    }
+    
+    // As a final fallback, the node itself might be the string
+    if (typeof nameNode === 'string') {
+      return nameNode;
+    }
+    
+    // Prevent returning objects
+    core.debug(`extractTableName: Could not extract string from node: ${JSON.stringify(nameNode)}`);
     return null;
   }
 

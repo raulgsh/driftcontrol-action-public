@@ -442,10 +442,31 @@ function shortenPath(path) {
   return path;
 }
 
+// Convert glob patterns to regex (consolidates logic from analyzers)
+function globToRegex(glob) {
+  let pattern;
+  if (glob.includes('**/')) {
+    const parts = glob.split('**/');
+    const prefix = parts[0].replace(/\./g, '\\.');
+    const suffix = parts[1]
+      .replace(/\./g, '\\.')
+      .replace(/\*/g, '[^/]*');
+    pattern = `^${prefix}.*${suffix}$`;
+  } else {
+    pattern = glob
+      .replace(/\./g, '\\.')
+      .replace(/\*\*/g, '.*')
+      .replace(/\*/g, '[^/]*')
+      + '$';
+  }
+  return new RegExp(pattern);
+}
+
 module.exports = {
   generateCommentBody,
   generateFixSuggestion,
   getLLMExplanation,
   generateImpactSummary,
-  buildCorrelationGraph
+  buildCorrelationGraph,
+  globToRegex
 };
