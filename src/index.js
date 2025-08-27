@@ -1,5 +1,6 @@
 const core = require('@actions/core');
 const github = require('@actions/github');
+const micromatch = require('micromatch');
 const SqlAnalyzer = require('./sql-analyzer');
 const OpenApiAnalyzer = require('./openapi-analyzer');
 const IaCAnalyzer = require('./iac-analyzer');
@@ -170,7 +171,7 @@ async function run() {
         result.rootCause = rootCauses.find(r => r.result === result);
         
         // Apply correlation-based severity assessment
-        riskScorer.assessCorrelationImpact(result, correlations);
+        riskScorer.assessCorrelationImpact(result, correlations, correlationConfig);
         
         // Update severity tracking if upgraded
         if (result.severity === 'high' && !hasHighSeverity) {
@@ -249,23 +250,750 @@ async function run() {
 
 
 // Helper function to generate stable artifact ID for consistent matching
+// Normalize paths and API endpoints
+const normPath = (p) => p ? p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '').replace(/^\.\//, '') : '';
+const normApi = (ep) => {
+  if (!ep) return 'api:unknown';
+  const parts = ep.split(':');
+  const hasMethod = parts.length > 1;
+  const method = (hasMethod ? parts[0] : 'GET').toUpperCase();
+  const path = normPath((hasMethod ? parts.slice(1).join(':') : ep)
+    .toLowerCase()
+    .replace(/\{[^}]+\}/g, m => m.toLowerCase())); // Normalize placeholders
+  return `api:${method}:${path}`;
+};
+
 function getArtifactId(result) {
   if (!result) return 'unknown';
+  if (result.id) return result.id; // Pre-computed if available
   
-  // Try different ID strategies in priority order
-  if (result.id) return result.id; // Explicit ID if available
-  if (result.file) return result.file; // File path is a good ID
-  if (result.type && result.name) return `${result.type}:${result.name}`;
-  if (result.type && result.entities && result.entities[0]) return `${result.type}:${result.entities[0]}`;
-  if (result.type && result.endpoints && result.endpoints[0]) return `${result.type}:${result.endpoints[0]}`;
-  if (result.type) return `${result.type}:${result.severity || 'unknown'}`;
+  // API: normalize method:path
+  if (result.type === 'api' && result.endpoints && result.endpoints[0]) {
+    return normApi(result.endpoints[0]);
+  }
   
-  // Fallback to string representation
-  return JSON.stringify(result).substring(0, 100);
+  // Database: lowercase table name
+  if (result.type === 'database' && result.entities && result.entities[0]) {
+    return `db:table:${result.entities[0].toLowerCase()}`;
+  }
+  
+  // Infrastructure: resource type and ID
+  if (result.type === 'infrastructure' && result.resources && result.resources[0]) {
+    const resourceType = (result.resourceType || 'resource').toLowerCase();
+    return `iac:${resourceType}:${result.resources[0].toLowerCase()}`;
+  }
+  
+  // Configuration files
+  if (result.type === 'configuration' && result.file) {
+    return `config:${normPath(result.file)}`;
+  }
+  
+  // File-based fallback: normalize path
+  if (result.file) return `file:${normPath(result.file)}`;
+  
+  // Type-based fallback
+  return `${result.type}:${result.name || result.severity || 'unknown'}`.toLowerCase();
 }
 
-// Cross-layer correlation helper functions
-function correlateAcrossLayers(driftResults, files, correlationConfig = null) {
+// Canonical pair key for undirected pairs
+function getPairKey(a, b) {
+  const A = getArtifactId(a);
+  const B = getArtifactId(b);
+  return A < B ? `${A}::${B}` : `${B}::${A}`; // Canonical ordering
+}
+
+// Expand multi-item results into atomic artifacts
+function expandResults(driftResults) {
+  const expanded = [];
+  for (const r of driftResults) {
+    if (r.type === 'api' && Array.isArray(r.endpoints) && r.endpoints.length > 1) {
+      r.endpoints.forEach(ep => expanded.push({ ...r, endpoints: [ep], artifactId: null }));
+    } else if (r.type === 'database' && Array.isArray(r.entities) && r.entities.length > 1) {
+      r.entities.forEach(t => expanded.push({ ...r, entities: [t], artifactId: null }));
+    } else if (r.type === 'infrastructure' && Array.isArray(r.resources) && r.resources.length > 1) {
+      r.resources.forEach(res => expanded.push({ ...r, resources: [res], artifactId: null }));
+    } else {
+      expanded.push(r);
+    }
+  }
+  return expanded;
+}
+
+// Shared token matcher for rule resolution
+function matchToken(result, token) {
+  if (!token) return false;
+  const t = String(token).toLowerCase();
+  
+  const candidates = [
+    result.file, result.table, result.name, result.resourceId,
+    result.resourceType, result.artifactId,
+    ...(result.endpoints || []),
+    ...(result.entities || []),
+    ...(result.resources || [])
+  ].filter(Boolean).map(x => String(x).toLowerCase());
+  
+  // Check for glob pattern
+  if (token.includes('*') || token.includes('?')) {
+    return candidates.some(c => micromatch.isMatch(c, t));
+  }
+  
+  // Exact or substring match
+  return candidates.some(c => c === t || c.includes(t));
+}
+
+// Resolve token to actual artifacts
+function resolveTokenToArtifacts(driftResults, token) {
+  if (!token) return [];
+  return driftResults.filter(r => matchToken(r, token));
+}
+
+// Check if a pair involves critical changes that should not be ignored
+function isCriticalPair(a, b) {
+  const txt = (x) => (x?.changes || []).join(' ') + ' ' + JSON.stringify(x);
+  const combined = txt(a) + ' ' + txt(b);
+  
+  // Destructive database operations
+  const hasDbDestructive = /DROP\s+(TABLE|COLUMN)|TRUNCATE|ALTER\s+TABLE.*(SET\s+NOT\s+NULL|TYPE)/i.test(combined);
+  
+  // Security vulnerabilities
+  const hasCve = /CVE-|GHSA-|SECURITY_VULNERABILITY|MALICIOUS_PACKAGE/i.test(combined);
+  
+  // Wide-open security groups
+  const hasWideSg = /0\.0\.0\.0\/0|::\/0|SECURITY_GROUP_DELETION/i.test(combined);
+  
+  // Secret key changes
+  const hasSecretChanges = /SECRET_KEY_REMOVED|SECRET_KEY_ADDED/i.test(combined);
+  
+  return hasDbDestructive || hasCve || hasWideSg || hasSecretChanges;
+}
+
+// Resolve rule pairs to actual artifact pairs
+function resolveRulePairsToArtifacts(driftResults, rules) {
+  const pairs = new Set();
+  
+  (rules || []).forEach(rule => {
+    if (!rule.source || !rule.target || rule.type === 'ignore') return; // Skip ignore rules
+    
+    const sources = resolveTokenToArtifacts(driftResults, rule.source);
+    const targets = resolveTokenToArtifacts(driftResults, rule.target);
+    
+    sources.forEach(s => {
+      targets.forEach(t => {
+        if (s !== t) pairs.add(getPairKey(s, t));
+      });
+    });
+  });
+  
+  return pairs;
+}
+
+// Base class for pluggable correlation strategies
+class CorrelationStrategy {
+  constructor(name, config = {}) {
+    this.name = name;
+    this.weight = Math.max(0, Math.min(1, config.weight || 1.0));
+    this.enabled = config.enabled !== false;
+    this.budget = config.budget || 'low'; // 'low', 'medium', 'high'
+  }
+  
+  async run({ driftResults, files, config, processedPairs, candidatePairs }) {
+    // Override in implementations
+    return [];
+  }
+}
+
+// Apply user-defined correlation rules with safety rails
+function applyUserDefinedRules(expandedResults, correlationConfig, processedPairs) {
+  const correlations = [];
+  if (!correlationConfig?.correlationRules) return correlations;
+  
+  core.info(`Applying ${correlationConfig.correlationRules.length} user-defined correlation rules`);
+  
+  for (const rule of correlationConfig.correlationRules) {
+    // Handle ignore rules with safety rails
+    if (rule.type === 'ignore') {
+      const sources = resolveTokenToArtifacts(expandedResults, rule.source);
+      const targets = resolveTokenToArtifacts(expandedResults, rule.target);
+      
+      for (const s of sources) {
+        for (const t of targets) {
+          if (s === t) continue;
+          const key = getPairKey(s, t);
+          
+          // Safety rail: don't ignore critical pairs
+          if (isCriticalPair(s, t)) {
+            core.warning(`Ignore rule overruled for CRITICAL pair ${key} — rule kept but not applied.`);
+            continue;
+          }
+          
+          processedPairs.add(key);
+          core.info(`Ignoring correlation: ${key} (${rule.reason || 'user-defined'})`);
+        }
+      }
+      continue;
+    }
+    
+    // Handle explicit mapping rules
+    const sources = resolveTokenToArtifacts(expandedResults, rule.source);
+    const targets = resolveTokenToArtifacts(expandedResults, rule.target);
+    
+    sources.forEach(source => {
+      targets.forEach(target => {
+        if (source !== target) {
+          const pairKey = getPairKey(source, target);
+          processedPairs.add(pairKey);
+          
+          correlations.push({
+            source,
+            target,
+            relationship: rule.type,
+            confidence: 1.0,
+            userDefined: true,
+            details: rule.description || `User-defined ${rule.type} correlation`,
+            evidence: rule.evidence || [],
+            rule
+          });
+          
+          core.info(`Applied user-defined correlation: ${rule.type} between ${getArtifactId(source)} and ${getArtifactId(target)}`);
+        }
+      });
+    });
+  }
+  
+  return correlations;
+}
+
+// Select candidate pairs for expensive strategies
+function selectCandidatePairs(preliminarySignals, rules, expandedResults, config) {
+  const candidates = new Set();
+  const thresholds = config?.thresholds || { correlate_min: 0.55 };
+  const limits = config?.limits || { top_k_per_source: 3, max_pairs_high_cost: 100 };
+  
+  // Group by source
+  const signalsBySource = new Map();
+  preliminarySignals.forEach(signal => {
+    const sourceId = getArtifactId(signal.source);
+    if (!signalsBySource.has(sourceId)) signalsBySource.set(sourceId, []);
+    signalsBySource.get(sourceId).push(signal);
+  });
+  
+  // Select top-K above threshold
+  signalsBySource.forEach(signals => {
+    signals.sort((a, b) => b.confidence - a.confidence);
+    signals.slice(0, limits.top_k_per_source).forEach(signal => {
+      if (signal.confidence >= thresholds.correlate_min) {
+        candidates.add(getPairKey(signal.source, signal.target));
+      }
+    });
+  });
+  
+  // Add non-ignore rule pairs only
+  const nonIgnoreRules = (rules || []).filter(r => r.type !== 'ignore');
+  const rulePairs = resolveRulePairsToArtifacts(expandedResults, nonIgnoreRules);
+  rulePairs.forEach(pair => candidates.add(pair));
+  
+  // Limit total
+  if (candidates.size > limits.max_pairs_high_cost) {
+    return new Set(Array.from(candidates).slice(0, limits.max_pairs_high_cost));
+  }
+  
+  return candidates;
+}
+
+// Aggregate correlations with correct weighted scoring
+function aggregateCorrelations(userCorrelations, strategySignals, strategiesByName, processedPairs, config) {
+  const correlationMap = new Map();
+  const thresholds = config?.thresholds || { block_min: 0.80 };
+  
+  // Process user-defined first (explicit strategy)
+  userCorrelations.forEach(corr => {
+    const key = getPairKey(corr.source, corr.target);
+    correlationMap.set(key, {
+      ...corr,
+      strategies: ['explicit'],
+      scores: { explicit: 1.0 },
+      weights: { explicit: 1.0 },
+      finalScore: 1.0, // Monotonicity rule
+      relationships: new Set([corr.relationship]),
+      evidence: corr.evidence || [],
+      explanation: `User-defined: ${corr.details}`
+    });
+    processedPairs.add(key);
+  });
+  
+  // Aggregate strategy signals
+  strategySignals.forEach((signals, strategyName) => {
+    const strategy = strategiesByName[strategyName];
+    if (!strategy || !strategy.enabled || !signals) return;
+    
+    signals.forEach(signal => {
+      const key = getPairKey(signal.source, signal.target);
+      if (processedPairs.has(key)) return;
+      
+      let correlation = correlationMap.get(key);
+      if (!correlation) {
+        correlation = {
+          source: signal.source,
+          target: signal.target,
+          strategies: [],
+          scores: {},
+          weights: {},
+          evidence: [],
+          relationships: new Set()
+        };
+        correlationMap.set(key, correlation);
+      }
+      
+      correlation.strategies.push(strategyName);
+      correlation.scores[strategyName] = signal.confidence;
+      correlation.weights[strategyName] = strategy.weight;
+      correlation.relationships.add(signal.relationship);
+      
+      // Structured evidence (de-duplicate)
+      if (signal.evidence) {
+        const structuredEvidence = signal.evidence.slice(0, 2).map(e => 
+          typeof e === 'string' ? { reason: e } : e
+        );
+        
+        // De-duplicate evidence
+        const existingReasons = new Set(correlation.evidence.map(e => e.reason || ''));
+        structuredEvidence.forEach(e => {
+          if (!existingReasons.has(e.reason || '')) {
+            correlation.evidence.push(e);
+            existingReasons.add(e.reason || '');
+          }
+        });
+        
+        // Limit total evidence
+        if (correlation.evidence.length > 5) {
+          correlation.evidence = correlation.evidence.slice(0, 5);
+        }
+      }
+    });
+  });
+  
+  // Calculate final scores and format
+  correlationMap.forEach(corr => {
+    // Calculate score with correct weighting
+    if (corr.scores.explicit) {
+      corr.finalScore = 1.0; // Monotonicity rule
+    } else {
+      let weightedSum = 0;
+      let totalWeight = 0;
+      Object.entries(corr.scores).forEach(([name, confidence]) => {
+        const weight = corr.weights[name] || 1.0;
+        weightedSum += confidence * weight;
+        totalWeight += weight;
+      });
+      corr.finalScore = totalWeight > 0 ? Math.min(1.0, weightedSum / totalWeight) : 0;
+    }
+    
+    // Format for backward compatibility
+    corr.relationship = [...corr.relationships].sort().join('|');
+    corr.confidence = corr.finalScore;
+    
+    // Build explanation
+    const scoreBreakdown = corr.strategies.map(s => 
+      `${s}:${corr.scores[s].toFixed(2)}×${corr.weights[s].toFixed(1)}`
+    ).join(', ');
+    
+    corr.explanation = `${getArtifactId(corr.source)} → ${getArtifactId(corr.target)} = ${corr.finalScore.toFixed(2)} [${scoreBreakdown}]`;
+  });
+  
+  return Array.from(correlationMap.values());
+}
+
+// Entity-based correlation strategy
+class EntityCorrelationStrategy extends CorrelationStrategy {
+  constructor(config) {
+    super('entity', config);
+  }
+  
+  async run({ driftResults, files, config, processedPairs, candidatePairs }) {
+    const correlations = [];
+    const apiChanges = driftResults.filter(r => r.type === 'api');
+    const dbChanges = driftResults.filter(r => r.type === 'database');
+    
+    for (const api of apiChanges) {
+      for (const db of dbChanges) {
+        const pairKey = getPairKey(api, db);
+        
+        // Skip if processed
+        if (processedPairs.has(pairKey)) continue;
+        
+        // Skip if not a candidate (for medium/high cost strategies)
+        if (this.budget !== 'low' && candidatePairs && !candidatePairs.has(pairKey)) continue;
+        
+        // Use detectRelation for sophisticated matching
+        if (detectRelation(api, db)) {
+          const apiEntities = api.metadata?.entities || [];
+          const dbEntities = db.metadata?.entities || [];
+          
+          let bestMatch = { confidence: 0 };
+          apiEntities.forEach(apiEntity => {
+            dbEntities.forEach(dbEntity => {
+              const apiVars = generateEntityVariations(apiEntity);
+              const dbVars = generateEntityVariations(dbEntity);
+              const match = findBestMatch(apiVars, dbVars);
+              if (match.confidence > bestMatch.confidence) {
+                bestMatch = { ...match, apiEntity, dbEntity };
+              }
+            });
+          });
+          
+          if (bestMatch.confidence > 0.6) {
+            correlations.push({
+              source: api,
+              target: db,
+              relationship: 'api_uses_table',
+              confidence: bestMatch.confidence,
+              evidence: [`API entity '${bestMatch.apiEntity}' correlates with table '${bestMatch.dbEntity}'`]
+            });
+          }
+        }
+      }
+    }
+    
+    return correlations;
+  }
+}
+
+// Operation-based correlation strategy
+class OperationCorrelationStrategy extends CorrelationStrategy {
+  constructor(config) {
+    super('operation', config);
+  }
+  
+  async run({ driftResults, files, config, processedPairs, candidatePairs }) {
+    const correlations = [];
+    const apiChanges = driftResults.filter(r => r.type === 'api');
+    const dbChanges = driftResults.filter(r => r.type === 'database');
+    
+    for (const api of apiChanges) {
+      for (const db of dbChanges) {
+        const pairKey = getPairKey(api, db);
+        
+        if (processedPairs.has(pairKey)) continue;
+        if (this.budget !== 'low' && candidatePairs && !candidatePairs.has(pairKey)) continue;
+        
+        const apiOps = api.metadata?.operations || [];
+        const dbOps = db.metadata?.operations || [];
+        
+        if (apiOps.length > 0 && dbOps.length > 0) {
+          const matchingOps = apiOps.filter(op => dbOps.includes(op));
+          if (matchingOps.length > 0) {
+            const confidence = Math.min(0.9, 0.6 + (matchingOps.length * 0.1));
+            correlations.push({
+              source: api,
+              target: db,
+              relationship: 'operation_alignment',
+              confidence: confidence,
+              evidence: [`Aligned operations: ${matchingOps.join(', ')}`]
+            });
+          }
+        }
+      }
+    }
+    
+    return correlations;
+  }
+}
+
+// Infrastructure correlation strategy
+class InfrastructureCorrelationStrategy extends CorrelationStrategy {
+  constructor(config) {
+    super('infrastructure', config);
+    this.budget = config.budget || 'medium';
+  }
+  
+  async run({ driftResults, files, config, processedPairs, candidatePairs }) {
+    const correlations = [];
+    const iacChanges = driftResults.filter(r => r.type === 'infrastructure');
+    const configChanges = driftResults.filter(r => r.type === 'configuration');
+    const apiChanges = driftResults.filter(r => r.type === 'api');
+    
+    // Infrastructure to configuration
+    for (const iac of iacChanges) {
+      for (const cfg of configChanges) {
+        const pairKey = getPairKey(iac, cfg);
+        
+        if (processedPairs.has(pairKey)) continue;
+        if (this.budget !== 'low' && candidatePairs && !candidatePairs.has(pairKey)) continue;
+        
+        if ((iac.file?.includes('terraform') || iac.file?.includes('cloudformation')) && 
+            (cfg.file?.includes('env') || cfg.file?.includes('config'))) {
+          correlations.push({
+            source: iac,
+            target: cfg,
+            relationship: 'infra_affects_config',
+            confidence: 0.7,
+            evidence: ['Infrastructure change may affect application configuration']
+          });
+        }
+        
+        // Check for resource dependencies
+        if (iac.resources && cfg.dependencies) {
+          const sharedResources = [];
+          iac.resources.forEach(resource => {
+            cfg.dependencies.forEach(dep => {
+              const resourceVars = generateEntityVariations(resource);
+              const depVars = generateEntityVariations(dep);
+              const match = findBestMatch(resourceVars, depVars);
+              if (match.confidence > 0.7) {
+                sharedResources.push(resource);
+              }
+            });
+          });
+          
+          if (sharedResources.length > 0) {
+            correlations.push({
+              source: iac,
+              target: cfg,
+              relationship: 'resource_dependency',
+              confidence: 0.75,
+              evidence: [`Shared resources: ${sharedResources.join(', ')}`]
+            });
+          }
+        }
+      }
+      
+      // Infrastructure to API
+      for (const api of apiChanges) {
+        const pairKey = getPairKey(iac, api);
+        
+        if (processedPairs.has(pairKey)) continue;
+        if (this.budget !== 'low' && candidatePairs && !candidatePairs.has(pairKey)) continue;
+        
+        if (iac.resources) {
+          const apiRelatedTerms = ['api', 'gateway', 'function', 'lambda', 'endpoint', 'service'];
+          const isApiInfra = iac.resources.some(r => {
+            const rLower = r.toLowerCase();
+            return apiRelatedTerms.some(term => rLower.includes(term));
+          });
+          
+          if (isApiInfra) {
+            correlations.push({
+              source: iac,
+              target: api,
+              relationship: 'infra_hosts_api',
+              confidence: 0.75,
+              evidence: ['Infrastructure changes affect API deployment']
+            });
+          }
+        }
+      }
+    }
+    
+    return correlations;
+  }
+}
+
+// Dependency correlation strategy
+class DependencyCorrelationStrategy extends CorrelationStrategy {
+  constructor(config) {
+    super('dependency', config);
+  }
+  
+  async run({ driftResults, files, config, processedPairs, candidatePairs }) {
+    const correlations = [];
+    const packageChanges = driftResults.filter(r => 
+      r.type === 'configuration' && r.file?.includes('package')
+    );
+    const apiChanges = driftResults.filter(r => r.type === 'api');
+    const dbChanges = driftResults.filter(r => r.type === 'database');
+    
+    for (const pkg of packageChanges) {
+      const pkgDeps = pkg.metadata?.dependencies || [];
+      
+      // Link package changes to API
+      for (const api of apiChanges) {
+        const pairKey = getPairKey(pkg, api);
+        
+        if (processedPairs.has(pairKey)) continue;
+        if (this.budget !== 'low' && candidatePairs && !candidatePairs.has(pairKey)) continue;
+        
+        if (pkgDeps.length > 0) {
+          const apiDeps = pkgDeps.filter(dep => {
+            const depLower = dep.toLowerCase();
+            return depLower.includes('express') || depLower.includes('fastify') || 
+                   depLower.includes('koa') || depLower.includes('hapi') ||
+                   depLower.includes('swagger') || depLower.includes('openapi');
+          });
+          
+          if (apiDeps.length > 0) {
+            correlations.push({
+              source: pkg,
+              target: api,
+              relationship: 'dependency_affects_api',
+              confidence: 0.8,
+              evidence: [`API-related dependencies changed: ${apiDeps.join(', ')}`]
+            });
+          }
+        }
+      }
+      
+      // Link package changes to database
+      for (const db of dbChanges) {
+        const pairKey = getPairKey(pkg, db);
+        
+        if (processedPairs.has(pairKey)) continue;
+        if (this.budget !== 'low' && candidatePairs && !candidatePairs.has(pairKey)) continue;
+        
+        if (pkgDeps.length > 0) {
+          const dbDeps = pkgDeps.filter(dep => {
+            const depLower = dep.toLowerCase();
+            return depLower.includes('sequelize') || depLower.includes('typeorm') ||
+                   depLower.includes('prisma') || depLower.includes('knex') ||
+                   depLower.includes('mongoose') || depLower.includes('pg') ||
+                   depLower.includes('mysql') || depLower.includes('sqlite');
+          });
+          
+          if (dbDeps.length > 0) {
+            correlations.push({
+              source: pkg,
+              target: db,
+              relationship: 'dependency_affects_db',
+              confidence: 0.8,
+              evidence: [`Database-related dependencies changed: ${dbDeps.join(', ')}`]
+            });
+          }
+        }
+      }
+    }
+    
+    return correlations;
+  }
+}
+
+// Temporal correlation strategy (disabled by default as it's noisy)
+class TemporalCorrelationStrategy extends CorrelationStrategy {
+  constructor(config) {
+    super('temporal', config);
+    this.enabled = config.enabled || false; // Disabled by default
+  }
+  
+  async run({ driftResults, files, config, processedPairs, candidatePairs }) {
+    const correlations = [];
+    
+    // Find drift results in the same directory
+    for (let i = 0; i < driftResults.length; i++) {
+      const result1 = driftResults[i];
+      if (!result1.file) continue;
+      
+      const dir1 = result1.file.substring(0, result1.file.lastIndexOf('/'));
+      
+      for (let j = i + 1; j < driftResults.length; j++) {
+        const result2 = driftResults[j];
+        if (!result2.file) continue;
+        
+        const pairKey = getPairKey(result1, result2);
+        
+        if (processedPairs.has(pairKey)) continue;
+        if (this.budget !== 'low' && candidatePairs && !candidatePairs.has(pairKey)) continue;
+        
+        const dir2 = result2.file.substring(0, result2.file.lastIndexOf('/'));
+        
+        if (dir1 === dir2) {
+          correlations.push({
+            source: result1,
+            target: result2,
+            relationship: 'temporal_correlation',
+            confidence: 0.65,
+            evidence: ['Files changed in the same directory']
+          });
+        }
+      }
+    }
+    
+    return correlations;
+  }
+}
+
+// Main cross-layer correlation function
+async function correlateAcrossLayers(driftResults, files, correlationConfig = null) {
+  const processedPairs = new Set();
+  const strategiesByName = {};
+  
+  // Expand multi-item results into atomic artifacts
+  const expandedResults = expandResults(driftResults);
+  
+  // Build metadata and IDs for expanded results
+  expandedResults.forEach(result => {
+    if (!result.metadata) {
+      result.metadata = extractMetadata(result, files);
+    }
+    result.artifactId = getArtifactId(result);
+  });
+  
+  // Initialize strategies with config
+  const strategyConfig = correlationConfig?.strategyConfig || {};
+  const strategies = [
+    new EntityCorrelationStrategy(strategyConfig.entity || {}),
+    new OperationCorrelationStrategy(strategyConfig.operation || {}),
+    new InfrastructureCorrelationStrategy(strategyConfig.infrastructure || {}),
+    new DependencyCorrelationStrategy(strategyConfig.dependency || {}),
+    new TemporalCorrelationStrategy(strategyConfig.temporal || { enabled: false })
+  ].filter(s => s.enabled); // Only include enabled strategies
+  
+  strategies.forEach(s => strategiesByName[s.name] = s);
+  
+  // Apply user-defined rules first
+  const userCorrelations = applyUserDefinedRules(expandedResults, correlationConfig, processedPairs);
+  
+  // Run low-cost strategies with timing
+  const strategySignals = new Map();
+  const lowCostStrategies = strategies.filter(s => s.budget === 'low');
+  
+  for (const strategy of lowCostStrategies) {
+    const t0 = Date.now();
+    const signals = await strategy.run({
+      driftResults: expandedResults, 
+      files, 
+      config: correlationConfig,
+      processedPairs, 
+      candidatePairs: null
+    });
+    core.debug(`[${strategy.name}] ${signals.length} signals in ${Date.now()-t0}ms`);
+    strategySignals.set(strategy.name, signals);
+  }
+  
+  // Select candidates
+  const preliminarySignals = Array.from(strategySignals.values()).flat();
+  const candidatePairs = selectCandidatePairs(
+    preliminarySignals,
+    correlationConfig?.correlationRules,
+    expandedResults,
+    correlationConfig
+  );
+  core.debug(`Selected ${candidatePairs.size} candidate pairs for expensive strategies`);
+  
+  // Run expensive strategies on candidates
+  const expensiveStrategies = strategies.filter(s => s.budget !== 'low');
+  for (const strategy of expensiveStrategies) {
+    const t0 = Date.now();
+    const signals = await strategy.run({
+      driftResults: expandedResults, 
+      files, 
+      config: correlationConfig,
+      processedPairs, 
+      candidatePairs
+    });
+    core.debug(`[${strategy.name}] ${signals.length} signals in ${Date.now()-t0}ms`);
+    strategySignals.set(strategy.name, signals);
+  }
+  
+  // Aggregate
+  return aggregateCorrelations(
+    userCorrelations, 
+    strategySignals, 
+    strategiesByName,
+    processedPairs, 
+    correlationConfig
+  );
+}
+
+// Old implementation kept for reference, will be removed after testing
+function correlateAcrossLayersOLD(driftResults, files, correlationConfig = null) {
   const correlations = [];
   const processedPairs = new Set(); // Track processed pairs to avoid duplicates
   

@@ -148,13 +148,13 @@ const riskScorer = {
   },
   
   // Assess correlation impact on severity
-  assessCorrelationImpact(result, correlations) {
+  assessCorrelationImpact(result, correlations, config) {
     const core = require('@actions/core');
     
     // If no correlations, return result unchanged
     if (!correlations || correlations.length === 0) return result;
     
-    // Helper function to get artifact ID (duplicate from index.js - should be shared)
+    // Helper function to get artifact ID (should use the same logic as index.js)
     const getArtifactId = (r) => {
       if (!r) return 'unknown';
       if (r.artifactId) return r.artifactId; // Use pre-computed ID if available
@@ -166,42 +166,64 @@ const riskScorer = {
       return 'unknown';
     };
     
-    const resultId = getArtifactId(result);
+    const resultId = result.artifactId || getArtifactId(result);
+    const thresholds = config?.thresholds || {
+      correlate_min: 0.55,
+      block_min: 0.80
+    };
     
-    // Separate user-defined and heuristic correlations
-    const userDefinedCorrelations = correlations.filter(c => {
-      const sourceId = getArtifactId(c.source);
-      const targetId = getArtifactId(c.target);
-      return c.userDefined && (sourceId === resultId || targetId === resultId);
+    // Filter correlations involving this result using finalScore
+    const relevantCorrelations = correlations.filter(c => {
+      const sourceId = c.source.artifactId || getArtifactId(c.source);
+      const targetId = c.target.artifactId || getArtifactId(c.target);
+      return (sourceId === resultId || targetId === resultId) && 
+             (c.finalScore >= thresholds.correlate_min || c.confidence >= thresholds.correlate_min);
     });
     
-    // Count high-confidence correlations involving this result
-    const strongCorrelations = correlations.filter(c => {
-      const sourceId = getArtifactId(c.source);
-      const targetId = getArtifactId(c.target);
-      return c.confidence > 0.7 && (sourceId === resultId || targetId === resultId);
+    // Categorize by impact level using finalScore
+    const hardLinks = relevantCorrelations.filter(c => 
+      (c.finalScore || c.confidence) >= thresholds.block_min
+    );
+    const softLinks = relevantCorrelations.filter(c => {
+      const score = c.finalScore || c.confidence;
+      return score >= thresholds.correlate_min && score < thresholds.block_min;
     });
     
-    const impactCount = strongCorrelations.length;
+    // Separate user-defined correlations
+    const userDefinedCorrelations = relevantCorrelations.filter(c => c.userDefined);
+    
+    const impactCount = hardLinks.length;
     
     // Calculate cascade impact (how many other components are affected)
     const affectedComponents = new Set();
-    strongCorrelations.forEach(c => {
-      if (c.source === result) affectedComponents.add(c.target.file || c.target.type);
-      if (c.target === result) affectedComponents.add(c.source.file || c.source.type);
+    hardLinks.forEach(c => {
+      const sourceId = c.source.artifactId || getArtifactId(c.source);
+      const targetId = c.target.artifactId || getArtifactId(c.target);
+      const otherId = sourceId === resultId ? targetId : sourceId;
+      affectedComponents.add(otherId);
     });
     
     const cascadeImpact = affectedComponents.size;
     
     // Store correlation details in result
     result.correlationImpact = {
-      count: impactCount,
+      hard: hardLinks.length,
+      soft: softLinks.length,
       cascade: cascadeImpact,
-      correlations: strongCorrelations
+      correlations: relevantCorrelations
     };
     
     // Check if this is a critical security issue that should never be downgraded
     const isCriticalSecurity = this.isCriticalSecurityIssue(result);
+    
+    // Safety rail: Critical security issues must stay HIGH
+    if (isCriticalSecurity && result.severity !== 'high') {
+      result.severity = 'high';
+      result.reasoning = [...(result.reasoning || []), 
+        'Critical security issue - severity enforced to HIGH'
+      ];
+      core.info(`Safety rail: enforced HIGH severity for critical security issue in ${resultId}`);
+    }
     
     // Upgrade severity based on correlation impact
     const originalSeverity = result.severity;
@@ -264,18 +286,26 @@ const riskScorer = {
     
     // Add correlation details to reasoning if severity was upgraded
     if (result.severity !== originalSeverity) {
-      const correlationTypes = [...new Set(strongCorrelations.map(c => c.relationship))];
-      result.reasoning.push(`Correlation types: ${correlationTypes.join(', ')}`);
+      const correlationTypes = [...new Set(relevantCorrelations.map(c => c.relationship || ''))].filter(Boolean);
+      if (correlationTypes.length > 0) {
+        result.reasoning.push(`Correlation types: ${correlationTypes.sort().join(', ')}`);
+      }
       
       // Add specific impact details
-      if (strongCorrelations.some(c => c.relationship === 'api_uses_table')) {
+      if (relevantCorrelations.some(c => c.relationship?.includes('api_uses_table'))) {
         result.reasoning.push('API endpoints directly depend on affected database tables');
       }
-      if (strongCorrelations.some(c => c.relationship === 'operation_alignment')) {
+      if (relevantCorrelations.some(c => c.relationship?.includes('operation_alignment'))) {
         result.reasoning.push('Database operations align with API CRUD operations');
       }
-      if (strongCorrelations.some(c => c.relationship === 'dependency_affects_api' || c.relationship === 'dependency_affects_db')) {
+      if (relevantCorrelations.some(c => c.relationship?.includes('dependency_affects'))) {
         result.reasoning.push('Package dependency changes affect multiple layers');
+      }
+      
+      // Add finalScore details for transparency
+      const highScoreCorrelations = relevantCorrelations.filter(c => (c.finalScore || c.confidence) >= 0.9);
+      if (highScoreCorrelations.length > 0) {
+        result.reasoning.push(`${highScoreCorrelations.length} correlations with confidence ≥ 0.9`);
       }
     }
     

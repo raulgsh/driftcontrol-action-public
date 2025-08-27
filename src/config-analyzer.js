@@ -96,8 +96,54 @@ class ConfigAnalyzer {
       }
       
       core.info(`Successfully loaded ${correlationRules.length} correlation rules from config`);
+      
+      // Parse strategy configuration
+      let strategyConfig = {};
+      if (config.strategy_weights) {
+        Object.entries(config.strategy_weights).forEach(([name, value]) => {
+          if (typeof value === 'object') {
+            strategyConfig[name] = {
+              weight: Math.max(0, Math.min(1, value.weight || 1.0)), // Clamp to [0,1]
+              enabled: value.enabled !== false,
+              budget: value.budget || 'low'
+            };
+          } else {
+            // Simple numeric weight for backward compatibility
+            strategyConfig[name] = {
+              weight: Math.max(0, Math.min(1, value)),
+              enabled: true,
+              budget: 'low'
+            };
+          }
+        });
+        core.info(`Loaded strategy weights: ${JSON.stringify(strategyConfig)}`);
+      }
+      
+      // Parse thresholds with clamping
+      let thresholds = {};
+      if (config.thresholds) {
+        thresholds = {
+          correlate_min: Math.max(0, Math.min(1, config.thresholds.correlate_min || 0.55)),
+          block_min: Math.max(0, Math.min(1, config.thresholds.block_min || 0.80))
+        };
+        core.info(`Loaded thresholds: ${JSON.stringify(thresholds)}`);
+      }
+      
+      // Parse limits
+      let limits = {};
+      if (config.limits) {
+        limits = {
+          top_k_per_source: Math.max(1, config.limits.top_k_per_source || 3),
+          max_pairs_high_cost: Math.max(1, config.limits.max_pairs_high_cost || 100)
+        };
+        core.info(`Loaded limits: ${JSON.stringify(limits)}`);
+      }
+      
       return {
         correlationRules,
+        strategyConfig,
+        thresholds,
+        limits,
         configPath: correlationConfigPath,
         loaded: true
       };
