@@ -114,55 +114,76 @@ async function run() {
     const driftResults = [];
     
     
-    // Analyze SQL migration files
-    const sqlResults = await sqlAnalyzer.analyzeSqlFiles(
-      files, octokit, owner, repo, context.payload.pull_request.head.sha, sqlGlob
-    );
-    driftResults.push(...sqlResults.driftResults);
-    hasHighSeverity = hasHighSeverity || sqlResults.hasHighSeverity;
-    hasMediumSeverity = hasMediumSeverity || sqlResults.hasMediumSeverity;
+    // Execute all analyzers in parallel for better performance
+    const analysisPromises = [];
     
-    // Analyze OpenAPI drift
-    const apiResults = await openApiAnalyzer.analyzeOpenApiDrift(
-      octokit, owner, repo, context.payload.pull_request, actualOpenApiPath, renamedFromPath
+    // SQL Analysis Promise
+    analysisPromises.push(
+      sqlAnalyzer.analyzeSqlFiles(
+        files, octokit, owner, repo, context.payload.pull_request.head.sha, sqlGlob
+      )
     );
-    driftResults.push(...apiResults.driftResults);
-    hasHighSeverity = hasHighSeverity || apiResults.hasHighSeverity;
-    hasMediumSeverity = hasMediumSeverity || apiResults.hasMediumSeverity;
     
-    // Analyze Infrastructure as Code drift
+    // OpenAPI Analysis Promise
+    analysisPromises.push(
+      openApiAnalyzer.analyzeOpenApiDrift(
+        octokit, owner, repo, context.payload.pull_request, actualOpenApiPath, renamedFromPath
+      )
+    );
+    
+    // IaC Analysis Promise (conditional)
     if (terraformPlanPath || cloudformationGlob) {
-      const iacResults = await iacAnalyzer.analyzeIaCFiles(
-        files, octokit, owner, repo, context.payload.pull_request,
-        terraformPlanPath, cloudformationGlob, costThreshold
+      analysisPromises.push(
+        iacAnalyzer.analyzeIaCFiles(
+          files, octokit, owner, repo, context.payload.pull_request,
+          terraformPlanPath, cloudformationGlob, costThreshold
+        )
       );
-      driftResults.push(...iacResults.driftResults);
-      hasHighSeverity = hasHighSeverity || iacResults.hasHighSeverity;
-      hasMediumSeverity = hasMediumSeverity || iacResults.hasMediumSeverity;
     }
     
-    // Analyze Configuration drift (security-first: keys only)
+    // Config Analysis Promise (conditional, includes package-lock analysis)
     if (configYamlGlob || featureFlagsPath || files.some(f => f.filename.endsWith('package.json') || f.filename.endsWith('package-lock.json') || f.filename.includes('docker-compose'))) {
-      const configResults = await configAnalyzer.analyzeConfigFiles(
-        files, octokit, owner, repo, context.payload.pull_request,
-        configYamlGlob, featureFlagsPath
+      analysisPromises.push(
+        configAnalyzer.analyzeConfigFiles(
+          files, octokit, owner, repo, context.payload.pull_request,
+          configYamlGlob, featureFlagsPath
+        ).then(async (configResults) => {
+          // Handle package-lock files within the same promise chain
+          const packageLockFiles = files.filter(f => f.filename.endsWith('package-lock.json'));
+          const lockResults = await Promise.all(
+            packageLockFiles.map(file => 
+              configAnalyzer.analyzePackageLock(
+                octokit, owner, repo, context.payload.pull_request.head.sha, 
+                context.payload.pull_request.base.sha, file.filename
+              )
+            )
+          );
+          
+          // Merge lock results with config results
+          const validLockResults = lockResults.filter(r => r !== null);
+          configResults.driftResults.push(...validLockResults);
+          validLockResults.forEach(lockResult => {
+            if (lockResult.severity === 'high') configResults.hasHighSeverity = true;
+            if (lockResult.severity === 'medium') configResults.hasMediumSeverity = true;
+          });
+          
+          return configResults;
+        })
       );
-      driftResults.push(...configResults.driftResults);
-      hasHighSeverity = hasHighSeverity || configResults.hasHighSeverity;
-      hasMediumSeverity = hasMediumSeverity || configResults.hasMediumSeverity;
-      
-      // Also analyze package-lock.json files specifically
-      const packageLockFiles = files.filter(f => f.filename.endsWith('package-lock.json'));
-      for (const file of packageLockFiles) {
-        const lockResult = await configAnalyzer.analyzePackageLock(
-          octokit, owner, repo, context.payload.pull_request.head.sha, context.payload.pull_request.base.sha, file.filename
-        );
-        if (lockResult) {
-          driftResults.push(lockResult);
-          if (lockResult.severity === 'high') hasHighSeverity = true;
-          if (lockResult.severity === 'medium') hasMediumSeverity = true;
-        }
-      }
+    }
+    
+    core.info(`Executing ${analysisPromises.length} analyzers in parallel...`);
+    
+    // Execute all analyses in parallel
+    const allResults = await Promise.all(analysisPromises);
+    
+    core.info('All analyzers completed. Processing results...');
+    
+    // Process all results
+    for (const result of allResults) {
+      driftResults.push(...result.driftResults);
+      hasHighSeverity = hasHighSeverity || result.hasHighSeverity;
+      hasMediumSeverity = hasMediumSeverity || result.hasMediumSeverity;
     }
     
     // Cross-layer correlation analysis
