@@ -71,8 +71,10 @@ describe('CodeAnalysisStrategy', () => {
     
     test('should return empty correlations when no handlers or DB refs found', async () => {
       // Mock analyzeChangedFiles to return empty results
-      const originalAnalyze = require('../src/code-analysis').analyzeChangedFiles;
-      require('../src/code-analysis').analyzeChangedFiles = jest.fn().mockResolvedValue({
+      const codeAnalysisModule = require('../src/code-analysis');
+      const originalAnalyze = codeAnalysisModule.analyzeChangedFiles;
+      
+      codeAnalysisModule.analyzeChangedFiles = jest.fn().mockResolvedValue({
         handlers: [],
         dbRefs: [],
         calls: []
@@ -89,13 +91,15 @@ describe('CodeAnalysisStrategy', () => {
       expect(result).toEqual([]);
       
       // Restore original function
-      require('../src/code-analysis').analyzeChangedFiles = originalAnalyze;
+      codeAnalysisModule.analyzeChangedFiles = originalAnalyze;
     });
     
     test('should create correlation when API handler uses database table', async () => {
-      // Mock analyzeChangedFiles to return matching handler and DB ref
-      const originalAnalyze = require('../src/code-analysis').analyzeChangedFiles;
-      require('../src/code-analysis').analyzeChangedFiles = jest.fn().mockResolvedValue({
+      // Mock the analyzeChangedFiles function
+      const codeAnalysisModule = require('../src/code-analysis');
+      const originalAnalyze = codeAnalysisModule.analyzeChangedFiles;
+      
+      const mockAnalyzeChangedFiles = jest.fn().mockResolvedValue({
         handlers: [{
           method: 'GET',
           path: '/v1/users/{id}',
@@ -113,6 +117,9 @@ describe('CodeAnalysisStrategy', () => {
         }],
         calls: []
       });
+      
+      // Override the module's export
+      codeAnalysisModule.analyzeChangedFiles = mockAnalyzeChangedFiles;
       
       const result = await strategy.run({
         driftResults: mockDriftResults,
@@ -138,7 +145,7 @@ describe('CodeAnalysisStrategy', () => {
       });
       
       // Restore original function
-      require('../src/code-analysis').analyzeChangedFiles = originalAnalyze;
+      codeAnalysisModule.analyzeChangedFiles = originalAnalyze;
     });
     
     test('should respect candidate gating for medium budget strategy', async () => {
@@ -146,8 +153,10 @@ describe('CodeAnalysisStrategy', () => {
       const candidatePairs = new Set(); // Empty candidate set
       
       // Mock analyzeChangedFiles
-      const originalAnalyze = require('../src/code-analysis').analyzeChangedFiles;
-      require('../src/code-analysis').analyzeChangedFiles = jest.fn().mockResolvedValue({
+      const codeAnalysisModule = require('../src/code-analysis');
+      const originalAnalyze = codeAnalysisModule.analyzeChangedFiles;
+      
+      codeAnalysisModule.analyzeChangedFiles = jest.fn().mockResolvedValue({
         handlers: [{
           method: 'GET',
           path: '/v1/users/{id}',
@@ -178,15 +187,17 @@ describe('CodeAnalysisStrategy', () => {
       expect(result).toEqual([]);
       
       // Restore original function
-      require('../src/code-analysis').analyzeChangedFiles = originalAnalyze;
+      codeAnalysisModule.analyzeChangedFiles = originalAnalyze;
     });
     
     test('should skip already processed pairs', async () => {
       const processedPairs = new Set(['api:GET:/v1/users/{id}::db:table:users']);
       
       // Mock analyzeChangedFiles
-      const originalAnalyze = require('../src/code-analysis').analyzeChangedFiles;
-      require('../src/code-analysis').analyzeChangedFiles = jest.fn().mockResolvedValue({
+      const codeAnalysisModule = require('../src/code-analysis');
+      const originalAnalyze = codeAnalysisModule.analyzeChangedFiles;
+      
+      codeAnalysisModule.analyzeChangedFiles = jest.fn().mockResolvedValue({
         handlers: [{
           method: 'GET',
           path: '/v1/users/{id}',
@@ -217,13 +228,15 @@ describe('CodeAnalysisStrategy', () => {
       expect(result).toEqual([]);
       
       // Restore original function
-      require('../src/code-analysis').analyzeChangedFiles = originalAnalyze;
+      codeAnalysisModule.analyzeChangedFiles = originalAnalyze;
     });
     
     test('should handle analysis errors gracefully', async () => {
       // Mock analyzeChangedFiles to throw error
-      const originalAnalyze = require('../src/code-analysis').analyzeChangedFiles;
-      require('../src/code-analysis').analyzeChangedFiles = jest.fn().mockRejectedValue(
+      const codeAnalysisModule = require('../src/code-analysis');
+      const originalAnalyze = codeAnalysisModule.analyzeChangedFiles;
+      
+      codeAnalysisModule.analyzeChangedFiles = jest.fn().mockRejectedValue(
         new Error('Parse error')
       );
       
@@ -239,7 +252,7 @@ describe('CodeAnalysisStrategy', () => {
       expect(result).toEqual([]);
       
       // Restore original function
-      require('../src/code-analysis').analyzeChangedFiles = originalAnalyze;
+      codeAnalysisModule.analyzeChangedFiles = originalAnalyze;
     });
   });
   

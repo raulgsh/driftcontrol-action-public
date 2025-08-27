@@ -1,7 +1,7 @@
 // Code analysis correlation strategy
 const CorrelationStrategy = require('../strategy-base');
 const { getPairKey, getArtifactId } = require('../utils/artifacts');
-const { analyzeChangedFiles, bfsSymbols, matchDbRefs } = require('../../code-analysis');
+const codeAnalysis = require('../../code-analysis');
 
 class CodeAnalysisStrategy extends CorrelationStrategy {
   constructor(config) {
@@ -13,7 +13,7 @@ class CodeAnalysisStrategy extends CorrelationStrategy {
     
     try {
       // Analyze changed files to extract handlers, DB refs, and call graph
-      const { handlers, dbRefs, calls } = await analyzeChangedFiles({ 
+      const { handlers, dbRefs, calls } = await codeAnalysis.analyzeChangedFiles({ 
         files, 
         changedOnly: true, 
         depth: 2 
@@ -39,8 +39,8 @@ class CodeAnalysisStrategy extends CorrelationStrategy {
         
         for (const handler of matchingHandlers) {
           // Trace shallow call graph from handler
-          const reachableSymbols = bfsSymbols(handler, calls, 2);
-          const reachableDbRefs = matchDbRefs(reachableSymbols, dbRefs);
+          const reachableSymbols = codeAnalysis.bfsSymbols(handler, calls, 2);
+          const reachableDbRefs = codeAnalysis.matchDbRefs(reachableSymbols, dbRefs);
           
           for (const db of dbResults) {
             const pairKey = getPairKey(api, db);
@@ -139,7 +139,7 @@ class CodeAnalysisStrategy extends CorrelationStrategy {
     // Try to extract from changes
     if (dbResult.changes && dbResult.changes.length > 0) {
       const sqlContent = dbResult.changes.join(' ');
-      const tableMatch = sqlContent.match(/(?:FROM|INTO|TABLE|UPDATE|ALTER)\s+[`"']?(\w+)[`"']?/i);
+      const tableMatch = sqlContent.match(/(?:ALTER\s+TABLE|FROM|INTO|UPDATE)\s+[`"']?(\w+)[`"']?/i);
       if (tableMatch) {
         return tableMatch[1].toLowerCase();
       }
@@ -191,9 +191,15 @@ class CodeAnalysisStrategy extends CorrelationStrategy {
     if (this.pluralize(normalizedRef) === normalizedResult) return true;
     if (normalizedRef === this.pluralize(normalizedResult)) return true;
     
-    // Snake_case vs camelCase
-    if (this.camelToSnake(normalizedRef) === normalizedResult) return true;
-    if (normalizedRef === this.camelToSnake(normalizedResult)) return true;
+    // Snake_case vs camelCase conversions (apply before lowercasing)
+    const refAsSnake = this.camelToSnake(dbRefTable).toLowerCase();
+    const resultAsSnake = this.camelToSnake(resultTable).toLowerCase();
+    if (refAsSnake === normalizedResult) return true;
+    if (normalizedRef === resultAsSnake) return true;
+    
+    // Plural/singular with case conversion
+    if (this.pluralize(refAsSnake) === normalizedResult) return true;
+    if (refAsSnake === this.pluralize(normalizedResult)) return true;
     
     return false;
   }
