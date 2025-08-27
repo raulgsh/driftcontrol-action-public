@@ -348,7 +348,23 @@ class SqlAnalyzer {
     if (typeof column === 'string') {
       columnName = column;
     } else if (typeof column === 'object') {
+      // If this is a column_ref type, extract the column property first
+      if (column.type === 'column_ref' && column.column) {
+        return this.extractColumnName(column.column);
+      }
+      
+      // Check direct properties first
       columnName = column.column || column.name || column.value;
+      
+      // Handle nested expr.value structure (for DROP COLUMN in some dialects)
+      if (!columnName && column.expr && column.expr.value) {
+        columnName = column.expr.value;
+      }
+      
+      // Handle case where column.column is itself an object
+      if (!columnName && column.column && typeof column.column === 'object') {
+        columnName = column.column.expr?.value || column.column.value;
+      }
     }
     
     // Return only if it's a string
