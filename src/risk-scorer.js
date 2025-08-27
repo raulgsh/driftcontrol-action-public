@@ -105,6 +105,32 @@ const riskScorer = {
     return scoringResult;
   },
   
+  // Check if this is a critical security issue that should not be downgraded
+  isCriticalSecurityIssue(result) {
+    if (!result || !result.changes) return false;
+    
+    // Critical security patterns that should never be downgraded
+    const criticalPatterns = [
+      'SECURITY_VULNERABILITY',
+      'CVE_DETECTED',
+      'CVE-',
+      'DROP TABLE',
+      'DROP COLUMN',
+      'TRUNCATE TABLE',
+      'SECURITY_GROUP_DELETION',
+      'SECRET_KEY_REMOVED',
+      'SECRET_KEY_ADDED',
+      'INTEGRITY_MISMATCH',
+      'MALICIOUS_PACKAGE'
+    ];
+    
+    // Check if any change matches critical patterns
+    return result.changes.some(change => {
+      const upperChange = change.toUpperCase();
+      return criticalPatterns.some(pattern => upperChange.includes(pattern));
+    });
+  },
+  
   // Policy override with reason tracking
   applyOverride(result, overrideReason = null) {
     if (overrideReason) {
@@ -128,15 +154,33 @@ const riskScorer = {
     // If no correlations, return result unchanged
     if (!correlations || correlations.length === 0) return result;
     
+    // Helper function to get artifact ID (duplicate from index.js - should be shared)
+    const getArtifactId = (r) => {
+      if (!r) return 'unknown';
+      if (r.artifactId) return r.artifactId; // Use pre-computed ID if available
+      if (r.id) return r.id;
+      if (r.file) return r.file;
+      if (r.type && r.name) return `${r.type}:${r.name}`;
+      if (r.type && r.entities && r.entities[0]) return `${r.type}:${r.entities[0]}`;
+      if (r.type) return `${r.type}:${r.severity || 'unknown'}`;
+      return 'unknown';
+    };
+    
+    const resultId = getArtifactId(result);
+    
     // Separate user-defined and heuristic correlations
-    const userDefinedCorrelations = correlations.filter(c => 
-      c.userDefined && (c.source === result || c.target === result)
-    );
+    const userDefinedCorrelations = correlations.filter(c => {
+      const sourceId = getArtifactId(c.source);
+      const targetId = getArtifactId(c.target);
+      return c.userDefined && (sourceId === resultId || targetId === resultId);
+    });
     
     // Count high-confidence correlations involving this result
-    const strongCorrelations = correlations.filter(c => 
-      c.confidence > 0.7 && (c.source === result || c.target === result)
-    );
+    const strongCorrelations = correlations.filter(c => {
+      const sourceId = getArtifactId(c.source);
+      const targetId = getArtifactId(c.target);
+      return c.confidence > 0.7 && (sourceId === resultId || targetId === resultId);
+    });
     
     const impactCount = strongCorrelations.length;
     
@@ -156,24 +200,34 @@ const riskScorer = {
       correlations: strongCorrelations
     };
     
+    // Check if this is a critical security issue that should never be downgraded
+    const isCriticalSecurity = this.isCriticalSecurityIssue(result);
+    
     // Upgrade severity based on correlation impact
     const originalSeverity = result.severity;
     
     // User-defined correlations have higher impact weight
     if (userDefinedCorrelations.length > 0) {
-      // User-defined correlations immediately upgrade severity by one level
-      if (result.severity === 'low') {
-        result.severity = 'medium';
+      // Never downgrade critical security issues
+      if (isCriticalSecurity && result.severity === 'high') {
         result.reasoning = [...(result.reasoning || []), 
-          `Upgraded from low to medium severity: ${userDefinedCorrelations.length} user-defined correlation(s) detected`
+          `Critical security issue - severity cannot be reduced`
         ];
-        core.info(`User-defined correlation impact: upgraded ${result.file || result.type} from low to medium`);
-      } else if (result.severity === 'medium' && userDefinedCorrelations.length >= 2) {
-        result.severity = 'high';
-        result.reasoning = [...(result.reasoning || []), 
-          `Upgraded from medium to high severity: ${userDefinedCorrelations.length} user-defined correlations detected`
-        ];
-        core.info(`User-defined correlation impact: upgraded ${result.file || result.type} from medium to high`);
+      } else {
+        // User-defined correlations immediately upgrade severity by one level
+        if (result.severity === 'low') {
+          result.severity = 'medium';
+          result.reasoning = [...(result.reasoning || []), 
+            `Upgraded from low to medium severity: ${userDefinedCorrelations.length} user-defined correlation(s) detected`
+          ];
+          core.info(`User-defined correlation impact: upgraded ${resultId} from low to medium`);
+        } else if (result.severity === 'medium' && userDefinedCorrelations.length >= 2) {
+          result.severity = 'high';
+          result.reasoning = [...(result.reasoning || []), 
+            `Upgraded from medium to high severity: ${userDefinedCorrelations.length} user-defined correlations detected`
+          ];
+          core.info(`User-defined correlation impact: upgraded ${resultId} from medium to high`);
+        }
       }
       
       // Add user-defined correlation details

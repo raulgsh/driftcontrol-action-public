@@ -47,8 +47,9 @@ correlation_rules:
         }
       });
       
+      const mockPullRequest = { head: { sha: 'test-sha' }, base: { sha: 'base-sha' } };
       const result = await analyzer.loadCorrelationConfig(
-        mockOctokit, 'owner', 'repo', '.github/driftcontrol.yml'
+        mockOctokit, 'owner', 'repo', mockPullRequest, '.github/driftcontrol.yml'
       );
       
       expect(result.loaded).toBe(true);
@@ -72,8 +73,9 @@ correlation_rules:
     it('should handle missing config file gracefully', async () => {
       mockOctokit.rest.repos.getContent.mockRejectedValue({ status: 404 });
       
+      const mockPullRequest = { head: { sha: 'test-sha' }, base: { sha: 'base-sha' } };
       const result = await analyzer.loadCorrelationConfig(
-        mockOctokit, 'owner', 'repo', '.github/driftcontrol.yml'
+        mockOctokit, 'owner', 'repo', mockPullRequest, '.github/driftcontrol.yml'
       );
       
       expect(result.loaded).toBe(false);
@@ -90,8 +92,9 @@ correlation_rules:
         }
       });
       
+      const mockPullRequest = { head: { sha: 'test-sha' }, base: { sha: 'base-sha' } };
       const result = await analyzer.loadCorrelationConfig(
-        mockOctokit, 'owner', 'repo', '.github/driftcontrol.yml'
+        mockOctokit, 'owner', 'repo', mockPullRequest, '.github/driftcontrol.yml'
       );
       
       expect(result.loaded).toBe(false);
@@ -114,8 +117,9 @@ correlation_rules:
         }
       });
       
+      const mockPullRequest = { head: { sha: 'test-sha' }, base: { sha: 'base-sha' } };
       const result = await analyzer.loadCorrelationConfig(
-        mockOctokit, 'owner', 'repo', '.github/driftcontrol.yml'
+        mockOctokit, 'owner', 'repo', mockPullRequest, '.github/driftcontrol.yml'
       );
       
       expect(result.correlationRules).toHaveLength(1);
@@ -138,8 +142,9 @@ correlation_rules:
         }
       });
       
+      const mockPullRequest = { head: { sha: 'test-sha' }, base: { sha: 'base-sha' } };
       const result = await analyzer.loadCorrelationConfig(
-        mockOctokit, 'owner', 'repo', '.github/driftcontrol.yml'
+        mockOctokit, 'owner', 'repo', mockPullRequest, '.github/driftcontrol.yml'
       );
       
       expect(result.correlationRules[0]).toMatchObject({

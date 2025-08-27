@@ -11,20 +11,43 @@ class ConfigAnalyzer {
   }
 
   // Load user-defined correlation configuration from .github/driftcontrol.yml
-  async loadCorrelationConfig(octokit, owner, repo, correlationConfigPath) {
+  async loadCorrelationConfig(octokit, owner, repo, pullRequest, correlationConfigPath) {
     try {
-      core.info(`Loading correlation config from: ${correlationConfigPath}`);
+      core.info(`Loading correlation config from: ${correlationConfigPath} at ${pullRequest.head.sha}`);
       
-      // Try to fetch the correlation config file
+      // Try to fetch the correlation config file from the PR branch
       const { data: configData } = await octokit.rest.repos.getContent({
         owner,
         repo,
         path: correlationConfigPath,
-        ref: 'HEAD' // Use HEAD to get from default branch
+        ref: pullRequest.head.sha // Use PR head to get config from the PR branch
       });
       
-      const configContent = Buffer.from(configData.content, 'base64').toString();
-      const config = yaml.parse(configContent);
+      // Handle large files - if content is missing, try download_url
+      let configContent;
+      if (configData.content) {
+        configContent = Buffer.from(configData.content, 'base64').toString();
+      } else if (configData.download_url) {
+        core.info('Config file is large, fetching via download URL');
+        const response = await fetch(configData.download_url);
+        configContent = await response.text();
+      } else {
+        throw new Error('Unable to fetch config content');
+      }
+      
+      // Parse YAML with error handling
+      let config;
+      try {
+        config = yaml.parse(configContent);
+      } catch (yamlError) {
+        core.warning(`Invalid YAML in correlation config: ${yamlError.message}`);
+        return {
+          correlationRules: [],
+          configPath: correlationConfigPath,
+          loaded: false,
+          error: `Invalid YAML: ${yamlError.message}`
+        };
+      }
       
       // Validate and normalize correlation rules
       const correlationRules = [];
@@ -41,10 +64,31 @@ class ConfigAnalyzer {
           const normalizedRule = {
             ...rule,
             confidence: 1.0, // User-defined rules have maximum confidence
-            source: rule.source || rule.api_endpoint || rule.iac_resource_id,
-            target: rule.target || rule.db_table || rule.config_file,
             userDefined: true
           };
+          
+          // Handle different rule formats
+          if (rule.type === 'api_to_db') {
+            // Support both simple and method-aware API rules
+            if (rule.api && typeof rule.api === 'object') {
+              // Method-aware format: { method: 'GET', route: '/v1/users' }
+              normalizedRule.source = `${rule.api.method || 'ANY'}:${rule.api.route}`;
+              normalizedRule.apiMethod = rule.api.method;
+              normalizedRule.apiRoute = rule.api.route;
+            } else {
+              // Simple format: api_endpoint: '/v1/users'
+              normalizedRule.source = rule.api_endpoint || rule.source;
+              normalizedRule.apiRoute = rule.api_endpoint;
+            }
+            normalizedRule.target = rule.db_table || rule.target;
+          } else if (rule.type === 'iac_to_config') {
+            normalizedRule.source = rule.iac_resource_id || rule.source;
+            normalizedRule.target = rule.config_file || rule.target;
+          } else {
+            // Generic rule types (including 'ignore')
+            normalizedRule.source = rule.source;
+            normalizedRule.target = rule.target;
+          }
           
           correlationRules.push(normalizedRule);
           core.info(`Loaded ${rule.type} correlation rule: ${normalizedRule.source} -> ${normalizedRule.target}`);

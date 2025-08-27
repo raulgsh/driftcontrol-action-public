@@ -802,6 +802,7 @@ describe('Integration Tests', () => {
           {
             type: 'api_to_db',
             source: '/v1/users/{userId}',
+            apiRoute: '/v1/users/{userId}', // Add apiRoute for matching
             target: 'application_users',
             description: 'User API to DB mapping',
             confidence: 1.0,

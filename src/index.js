@@ -88,7 +88,7 @@ async function run() {
     // Load correlation configuration if provided
     let correlationConfig = null;
     if (correlationConfigPath) {
-      correlationConfig = await configAnalyzer.loadCorrelationConfig(octokit, owner, repo, correlationConfigPath);
+      correlationConfig = await configAnalyzer.loadCorrelationConfig(octokit, owner, repo, context.payload.pull_request, correlationConfigPath);
       if (correlationConfig.loaded) {
         core.info(`Correlation config loaded with ${correlationConfig.correlationRules.length} rules`);
       }
@@ -248,6 +248,22 @@ async function run() {
 }
 
 
+// Helper function to generate stable artifact ID for consistent matching
+function getArtifactId(result) {
+  if (!result) return 'unknown';
+  
+  // Try different ID strategies in priority order
+  if (result.id) return result.id; // Explicit ID if available
+  if (result.file) return result.file; // File path is a good ID
+  if (result.type && result.name) return `${result.type}:${result.name}`;
+  if (result.type && result.entities && result.entities[0]) return `${result.type}:${result.entities[0]}`;
+  if (result.type && result.endpoints && result.endpoints[0]) return `${result.type}:${result.endpoints[0]}`;
+  if (result.type) return `${result.type}:${result.severity || 'unknown'}`;
+  
+  // Fallback to string representation
+  return JSON.stringify(result).substring(0, 100);
+}
+
 // Cross-layer correlation helper functions
 function correlateAcrossLayers(driftResults, files, correlationConfig = null) {
   const correlations = [];
@@ -258,6 +274,8 @@ function correlateAcrossLayers(driftResults, files, correlationConfig = null) {
     if (!result.metadata) {
       result.metadata = extractMetadata(result, files);
     }
+    // Assign stable artifact ID
+    result.artifactId = getArtifactId(result);
   });
   
   // 0. Apply user-defined correlation rules FIRST (highest priority)
@@ -268,31 +286,77 @@ function correlateAcrossLayers(driftResults, files, correlationConfig = null) {
       // Handle ignore rules
       if (rule.type === 'ignore') {
         // Mark this pair as processed to skip in heuristic correlation
-        const ignoreKey = `${rule.source}:${rule.target}`;
-        processedPairs.add(ignoreKey);
+        // Store multiple formats to ensure matches
+        processedPairs.add(`${rule.source}::${rule.target}`);
+        processedPairs.add(`${rule.target}::${rule.source}`); // Bidirectional
+        
+        // Also add variations based on common patterns
+        if (rule.source.includes('/')) {
+          const sourceBasename = rule.source.split('/').pop();
+          processedPairs.add(`${sourceBasename}::${rule.target}`);
+        }
+        if (rule.target.includes('/')) {
+          const targetBasename = rule.target.split('/').pop();
+          processedPairs.add(`${rule.source}::${targetBasename}`);
+        }
+        
         core.info(`Ignoring correlation between ${rule.source} and ${rule.target}: ${rule.reason}`);
         continue;
       }
       
       // Find matching drift results for the rule
       const sourceResults = driftResults.filter(r => {
-        // Match by file path, endpoint, or resource ID
-        if (r.file && (r.file === rule.source || r.file.includes(rule.source))) return true;
-        if (r.endpoints && r.endpoints.some(e => e === rule.source)) return true;
+        // Exact match first
+        if (r.artifactId === rule.source) return true;
+        if (r.file === rule.source) return true;
+        
+        // Match by file path (contains check for path matching)
+        if (r.file && rule.source.includes('/') && r.file.includes(rule.source)) return true;
+        
+        // Match API endpoints (with method support)
+        if (rule.apiRoute && r.endpoints) {
+          return r.endpoints.some(e => {
+            if (rule.apiMethod && rule.apiMethod !== 'ANY') {
+              // Method-aware matching
+              return e === rule.apiRoute || e === `${rule.apiMethod}:${rule.apiRoute}`;
+            }
+            return e === rule.apiRoute || e === rule.source;
+          });
+        }
+        
+        // Match by resource ID for IaC
         if (r.resources && r.resources.some(res => res === rule.source)) return true;
-        if (r.type && rule.source && rule.source.includes(r.type)) return true;
+        
+        // Match by entity name
+        if (r.entities && r.entities.some(e => e === rule.source)) return true;
+        
         return false;
       });
       
       const targetResults = driftResults.filter(r => {
-        // Match by file path, table name, or config file
-        if (r.file && (r.file === rule.target || r.file.includes(rule.target))) return true;
+        // Exact match first
+        if (r.artifactId === rule.target) return true;
+        if (r.file === rule.target) return true;
+        
+        // Match by file path
+        if (r.file && rule.target.includes('/') && r.file.includes(rule.target)) return true;
+        
+        // Match database tables
         if (r.entities && r.entities.some(e => e === rule.target)) return true;
+        
+        // Check SQL changes for table mentions
         if (r.type === 'database' && r.changes) {
-          // Check if any change mentions the target table
-          return r.changes.some(c => c.toLowerCase().includes(rule.target.toLowerCase()));
+          return r.changes.some(c => {
+            const changeLower = c.toLowerCase();
+            const targetLower = rule.target.toLowerCase();
+            // Look for table name in SQL statements
+            return changeLower.includes(`table ${targetLower}`) ||
+                   changeLower.includes(`from ${targetLower}`) ||
+                   changeLower.includes(`join ${targetLower}`) ||
+                   changeLower.includes(`${targetLower} `);
+          });
         }
-        if (r.type && rule.target && rule.target.includes(r.type)) return true;
+        
         return false;
       });
       
@@ -300,8 +364,10 @@ function correlateAcrossLayers(driftResults, files, correlationConfig = null) {
       sourceResults.forEach(source => {
         targetResults.forEach(target => {
           if (source !== target) {
-            const pairKey = `${source.file || source.type}:${target.file || target.type}`;
+            const pairKey = `${source.artifactId}::${target.artifactId}`;
+            const reversePairKey = `${target.artifactId}::${source.artifactId}`;
             processedPairs.add(pairKey); // Mark as processed
+            processedPairs.add(reversePairKey); // Mark reverse as processed too
             
             correlations.push({
               source: source,
@@ -313,7 +379,7 @@ function correlateAcrossLayers(driftResults, files, correlationConfig = null) {
               rule: rule // Keep original rule for reference
             });
             
-            core.info(`Applied user-defined correlation: ${rule.type} between ${source.file || source.type} and ${target.file || target.type}`);
+            core.info(`Applied user-defined correlation: ${rule.type} between ${source.artifactId} and ${target.artifactId}`);
           }
         });
       });
@@ -329,8 +395,9 @@ function correlateAcrossLayers(driftResults, files, correlationConfig = null) {
   apiChanges.forEach(api => {
     dbChanges.forEach(db => {
       // Skip if this pair was already processed by user-defined rules
-      const pairKey = `${api.file || api.type}:${db.file || db.type}`;
-      if (processedPairs.has(pairKey)) {
+      const pairKey = `${api.artifactId}::${db.artifactId}`;
+      const reversePairKey = `${db.artifactId}::${api.artifactId}`;
+      if (processedPairs.has(pairKey) || processedPairs.has(reversePairKey)) {
         return; // Skip this pair
       }
       
@@ -395,6 +462,13 @@ function correlateAcrossLayers(driftResults, files, correlationConfig = null) {
   iacChanges.forEach(iac => {
     // Infrastructure to configuration correlation
     configChanges.forEach(config => {
+      // Skip if this pair was already processed by user-defined rules
+      const pairKey = `${iac.artifactId}::${config.artifactId}`;
+      const reversePairKey = `${config.artifactId}::${iac.artifactId}`;
+      if (processedPairs.has(pairKey) || processedPairs.has(reversePairKey)) {
+        return; // Skip this pair
+      }
+      
       // Check for environment variable relationships
       if ((iac.file && iac.file.includes('terraform')) && 
           (config.file && (config.file.includes('env') || config.file.includes('config')))) {
@@ -436,6 +510,13 @@ function correlateAcrossLayers(driftResults, files, correlationConfig = null) {
     
     // Infrastructure to API correlation
     apiChanges.forEach(api => {
+      // Skip if this pair was already processed by user-defined rules
+      const pairKey = `${iac.artifactId}::${api.artifactId}`;
+      const reversePairKey = `${api.artifactId}::${iac.artifactId}`;
+      if (processedPairs.has(pairKey) || processedPairs.has(reversePairKey)) {
+        return; // Skip this pair
+      }
+      
       if (iac.resources && api.file) {
         // Check if infrastructure change affects API deployment
         const apiRelatedTerms = ['api', 'gateway', 'function', 'lambda', 'endpoint', 'service'];
@@ -467,6 +548,13 @@ function correlateAcrossLayers(driftResults, files, correlationConfig = null) {
     
     // Link package changes to API
     apiChanges.forEach(api => {
+      // Skip if this pair was already processed by user-defined rules
+      const pairKey = `${pkg.artifactId}::${api.artifactId}`;
+      const reversePairKey = `${api.artifactId}::${pkg.artifactId}`;
+      if (processedPairs.has(pairKey) || processedPairs.has(reversePairKey)) {
+        return; // Skip this pair
+      }
+      
       if (pkgDeps.length > 0) {
         // Check if any dependency is API-related
         const apiDeps = pkgDeps.filter(dep => {
@@ -490,6 +578,13 @@ function correlateAcrossLayers(driftResults, files, correlationConfig = null) {
     
     // Link package changes to database
     dbChanges.forEach(db => {
+      // Skip if this pair was already processed by user-defined rules
+      const pairKey = `${pkg.artifactId}::${db.artifactId}`;
+      const reversePairKey = `${db.artifactId}::${pkg.artifactId}`;
+      if (processedPairs.has(pairKey) || processedPairs.has(reversePairKey)) {
+        return; // Skip this pair
+      }
+      
       if (pkgDeps.length > 0) {
         // Check if any dependency is DB-related
         const dbDeps = pkgDeps.filter(dep => {
@@ -526,14 +621,19 @@ function correlateAcrossLayers(driftResults, files, correlationConfig = null) {
     driftResults.slice(i + 1).forEach(result2 => {
       if (result1.file && result2.file) {
         // Check if this pair should be ignored
-        const pairKey1 = `${result1.file}:${result2.file}`;
-        const pairKey2 = `${result2.file}:${result1.file}`;
+        const pairKey = `${result1.artifactId}::${result2.artifactId}`;
+        const reversePairKey = `${result2.artifactId}::${result1.artifactId}`;
+        
+        // Also check file-based keys for backward compatibility with ignore rules
+        const filePairKey1 = `${result1.file}::${result2.file}`;
+        const filePairKey2 = `${result2.file}::${result1.file}`;
         const fileBasename1 = result1.file.split('/').pop();
         const fileBasename2 = result2.file.split('/').pop();
-        const basenamePairKey1 = `${fileBasename1}:${fileBasename2}`;
-        const basenamePairKey2 = `${fileBasename2}:${fileBasename1}`;
+        const basenamePairKey1 = `${fileBasename1}::${fileBasename2}`;
+        const basenamePairKey2 = `${fileBasename2}::${fileBasename1}`;
         
-        if (processedPairs.has(pairKey1) || processedPairs.has(pairKey2) || 
+        if (processedPairs.has(pairKey) || processedPairs.has(reversePairKey) ||
+            processedPairs.has(filePairKey1) || processedPairs.has(filePairKey2) || 
             processedPairs.has(basenamePairKey1) || processedPairs.has(basenamePairKey2)) {
           return; // Skip this pair
         }
@@ -1023,7 +1123,8 @@ module.exports = {
   correlateFields,
   detectApiOperations,
   detectDbOperations,
-  operationsCorrelate
+  operationsCorrelate,
+  getArtifactId
 };
 
 // Only run if called directly (not imported)

@@ -4,16 +4,26 @@
 # User-defined correlation rules for explicit relationship mappings
 # These rules override heuristic correlations with confidence 1.0
 correlation_rules:
-  # Map API endpoints to database tables
+  # Map API endpoints to database tables (simple format)
   - type: api_to_db
     api_endpoint: /v1/users/{userId}
     db_table: application_users
     description: "Maps the public user API to the internal user table"
   
+  # Method-aware API to database mapping (recommended for REST APIs)
   - type: api_to_db
-    api_endpoint: /v1/posts
+    api:
+      method: GET
+      route: /v1/posts
     db_table: blog_posts
-    description: "Maps blog post API to posts table"
+    description: "Maps GET requests for posts to posts table"
+  
+  - type: api_to_db
+    api:
+      method: POST
+      route: /v1/posts
+    db_table: blog_posts
+    description: "Maps POST requests for creating posts"
   
   - type: api_to_db
     api_endpoint: /v1/orders/{orderId}

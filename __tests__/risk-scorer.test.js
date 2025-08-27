@@ -364,7 +364,7 @@ describe('Risk Scorer', () => {
     test('should be an object with expected structure', () => {
       expect(typeof riskScorer).toBe('object');
       expect(riskScorer).not.toBeNull();
-      expect(Object.keys(riskScorer)).toHaveLength(5); // Updated to include assessCorrelationImpact
+      expect(Object.keys(riskScorer)).toHaveLength(6); // Updated to include assessCorrelationImpact and isCriticalSecurityIssue
     });
   });
 });
