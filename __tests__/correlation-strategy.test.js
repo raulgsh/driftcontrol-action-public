@@ -4,7 +4,8 @@ const {
   expandResults,
   isCriticalPair,
   resolveTokenToArtifacts,
-  matchToken
+  matchToken,
+  aggregateCorrelations
 } = require('../src/index');
 
 describe('Correlation Strategy Engine', () => {
@@ -201,6 +202,55 @@ describe('Correlation Strategy Engine', () => {
       }
       
       expect(processedPairs.size).toBe(0); // Critical pair was not ignored
+    });
+  });
+
+  describe('aggregateCorrelations', () => {
+    test('handles multiple signals from same strategy correctly', () => {
+      const source = { type: 'api', id: 'api1' };
+      const target = { type: 'database', id: 'db1' };
+      
+      const strategySignals = new Map([
+        ['entity', [
+          { 
+            source, 
+            target, 
+            confidence: 0.4, 
+            relationship: 'uses', 
+            evidence: ['Low confidence match'] 
+          },
+          { 
+            source, 
+            target, 
+            confidence: 0.8, 
+            relationship: 'uses', 
+            evidence: ['High confidence match'] 
+          }
+        ]]
+      ]);
+      
+      const strategiesByName = {
+        entity: { enabled: true, weight: 1.0 }
+      };
+      
+      const processedPairs = new Set();
+      const config = { thresholds: { block_min: 0.8 } };
+      
+      const results = aggregateCorrelations([], strategySignals, strategiesByName, processedPairs, config);
+      
+      expect(results).toHaveLength(1);
+      const correlation = results[0];
+      
+      // Strategy appears only once
+      expect(correlation.strategies).toEqual(['entity']);
+      
+      // Score is the maximum (0.8)
+      expect(correlation.scores.entity).toBe(0.8);
+      expect(correlation.finalScore).toBe(0.8);
+      
+      // Evidence from higher confidence signal
+      expect(correlation.evidence[0].reason).toBe('High confidence match');
+      expect(correlation.evidence).toHaveLength(1);
     });
   });
 });

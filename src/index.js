@@ -500,6 +500,22 @@ function selectCandidatePairs(preliminarySignals, rules, expandedResults, config
   return candidates;
 }
 
+// Helper function to deduplicate evidence by reason, file, and line
+function dedupeEvidence(evidenceArray) {
+  const seen = new Set();
+  const result = [];
+  
+  evidenceArray.forEach(e => {
+    const key = JSON.stringify({ reason: e.reason, file: e.file, line: e.line });
+    if (!seen.has(key)) {
+      result.push(e);
+      seen.add(key);
+    }
+  });
+  
+  return result;
+}
+
 // Aggregate correlations with correct weighted scoring
 function aggregateCorrelations(userCorrelations, strategySignals, strategiesByName, processedPairs, config) {
   const correlationMap = new Map();
@@ -544,39 +560,38 @@ function aggregateCorrelations(userCorrelations, strategySignals, strategiesByNa
         correlationMap.set(key, correlation);
       }
       
-      correlation.strategies.push(strategyName);
-      correlation.scores[strategyName] = signal.confidence;
-      correlation.weights[strategyName] = strategy.weight;
-      correlation.relationships.add(signal.relationship);
+      // Track strategy name (avoid duplicates)
+      if (!correlation.strategies.includes(strategyName)) {
+        correlation.strategies.push(strategyName);
+        correlation.weights[strategyName] = strategy.weight;
+      }
       
-      // Structured evidence (de-duplicate)
-      if (signal.evidence) {
-        const structuredEvidence = signal.evidence.slice(0, 2).map(e => 
+      // Take max confidence if strategy emits multiple signals for same pair
+      const prevScore = correlation.scores[strategyName] ?? -1;
+      if (signal.confidence > prevScore) {
+        correlation.scores[strategyName] = signal.confidence;
+        
+        // Track evidence from winning signal per strategy
+        correlation._evidenceByStrategy ??= {};
+        const structured = (signal.evidence || []).slice(0, 2).map(e => 
           typeof e === 'string' ? { reason: e } : e
         );
-        
-        // De-duplicate evidence by reason and file/line
-        const existingEvidence = new Set(
-          correlation.evidence.map(e => JSON.stringify({ reason: e.reason, file: e.file, line: e.line }))
-        );
-        structuredEvidence.forEach(e => {
-          const key = JSON.stringify({ reason: e.reason, file: e.file, line: e.line });
-          if (!existingEvidence.has(key)) {
-            correlation.evidence.push(e);
-            existingEvidence.add(key);
-          }
-        });
-        
-        // Limit total evidence
-        if (correlation.evidence.length > 5) {
-          correlation.evidence = correlation.evidence.slice(0, 5);
-        }
+        correlation._evidenceByStrategy[strategyName] = structured;
       }
+      
+      // Track all relationships
+      correlation.relationships.add(signal.relationship);
     });
   });
   
-  // Calculate final scores and format
+  // Consolidate evidence from all strategies and calculate final scores
   correlationMap.forEach(corr => {
+    // Consolidate evidence from winning signals per strategy
+    if (corr._evidenceByStrategy) {
+      const flat = Object.values(corr._evidenceByStrategy).flat();
+      corr.evidence = dedupeEvidence(flat).slice(0, 5);
+      delete corr._evidenceByStrategy; // Clean up temp field
+    }
     // Calculate score with correct weighting
     if (corr.scores.explicit) {
       corr.finalScore = 1.0; // Monotonicity rule
@@ -1469,6 +1484,7 @@ module.exports = {
   applyUserDefinedRules,
   selectCandidatePairs,
   aggregateCorrelations,
+  dedupeEvidence,
   // Strategy classes
   CorrelationStrategy,
   EntityCorrelationStrategy,
