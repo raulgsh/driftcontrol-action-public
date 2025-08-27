@@ -1,0 +1,204 @@
+// Terraform plan analysis
+const core = require('@actions/core');
+const riskScorer = require('../../risk-scorer');
+const utils = require('./utils');
+
+async function analyzeTerraformPlan(octokit, owner, repo, pullRequest, terraformPath, costThreshold) {
+  try {
+    core.info(`Analyzing Terraform plan drift at: ${terraformPath}`);
+    
+    // Fetch head version of Terraform plan
+    let headPlan = null;
+    let headError = null;
+    try {
+      const { data: headData } = await octokit.rest.repos.getContent({
+        owner,
+        repo,
+        path: terraformPath,
+        ref: pullRequest.head.sha
+      });
+      const headContent = Buffer.from(headData.content, 'base64').toString();
+      headPlan = JSON.parse(headContent);
+      core.info(`Parsed head Terraform plan from: ${terraformPath}`);
+    } catch (error) {
+      headError = error;
+      core.info(`No Terraform plan found in head branch at ${terraformPath}: ${error.message}`);
+    }
+    
+    // Fetch base version of Terraform plan
+    let basePlan = null;
+    let baseError = null;
+    try {
+      const { data: baseData } = await octokit.rest.repos.getContent({
+        owner,
+        repo,
+        path: terraformPath,
+        ref: pullRequest.base.sha
+      });
+      const baseContent = Buffer.from(baseData.content, 'base64').toString();
+      basePlan = JSON.parse(baseContent);
+      core.info(`Parsed base Terraform plan from: ${terraformPath}`);
+    } catch (error) {
+      baseError = error;
+      core.info(`No Terraform plan found in base branch at ${terraformPath}: ${error.message}`);
+    }
+    
+    // If both fetches failed with actual errors (not just missing files), propagate the error
+    if (headError && baseError && headError.message !== 'Not Found' && baseError.message !== 'Not Found') {
+      throw headError; // Re-throw to trigger the warning in outer catch
+    }
+    
+    const iacChanges = [];
+    let estimatedCostIncrease = 0;
+    
+    // Handle plan deletion (HIGH severity)
+    if (basePlan && !headPlan) {
+      iacChanges.push('INFRASTRUCTURE_DELETION: Terraform plan was deleted');
+    }
+    // Handle new plan (analyze for risks)
+    else if (!basePlan && headPlan) {
+      // Analyze new plan's resource changes
+      if (headPlan.resource_changes) {
+        for (const resource of headPlan.resource_changes) {
+          const change = resource.change || {};
+          const actions = change.actions || [];
+          
+          if (actions.includes('create')) {
+            iacChanges.push(`RESOURCE_ADDITION: ${resource.type} - ${resource.address}`);
+            estimatedCostIncrease += utils.estimateResourceCost(resource.type);
+            
+            // Flag security-sensitive additions
+            if (resource.type === 'aws_security_group' || resource.type === 'aws_security_group_rule') {
+              iacChanges.push(`SECURITY_GROUP_ADDITION: ${resource.address}`);
+            }
+          } else if (actions.includes('delete')) {
+            iacChanges.push(`RESOURCE_DELETION: ${resource.type} - ${resource.address}`);
+            
+            // Flag security-sensitive deletions
+            if (resource.type === 'aws_security_group' || resource.type === 'aws_security_group_rule') {
+              iacChanges.push(`SECURITY_GROUP_DELETION: ${resource.address}`);
+            }
+          } else if (actions.includes('update') || actions.includes('modify')) {
+            iacChanges.push(`RESOURCE_MODIFICATION: ${resource.type} - ${resource.address}`);
+            
+            // Flag security-sensitive changes
+            if (resource.type === 'aws_security_group' || resource.type === 'aws_security_group_rule') {
+              iacChanges.push(`SECURITY_GROUP_CHANGE: ${resource.address}`);
+            }
+          }
+        }
+      }
+    }
+    // Compare base and head plans for drift
+    else if (basePlan && headPlan) {
+      // Build resource maps for comparison
+      const baseResources = new Map();
+      const headResources = new Map();
+      
+      if (basePlan.resource_changes) {
+        for (const resource of basePlan.resource_changes) {
+          baseResources.set(resource.address, resource);
+        }
+      }
+      
+      if (headPlan.resource_changes) {
+        for (const resource of headPlan.resource_changes) {
+          headResources.set(resource.address, resource);
+        }
+      }
+      
+      // Check for removed resources (exist in base but not in head)
+      for (const [address, baseResource] of baseResources) {
+        if (!headResources.has(address)) {
+          iacChanges.push(`RESOURCE_DELETION: ${baseResource.type} - ${address}`);
+          
+          // Flag security-sensitive deletions
+          if (baseResource.type === 'aws_security_group' || baseResource.type === 'aws_security_group_rule') {
+            iacChanges.push(`SECURITY_GROUP_DELETION: ${address}`);
+          }
+        }
+      }
+      
+      // Check for added resources and modifications
+      for (const [address, headResource] of headResources) {
+        const baseResource = baseResources.get(address);
+        
+        if (!baseResource) {
+          // Resource added
+          iacChanges.push(`RESOURCE_ADDITION: ${headResource.type} - ${address}`);
+          const change = headResource.change || {};
+          const actions = change.actions || [];
+          if (actions.includes('create')) {
+            estimatedCostIncrease += utils.estimateResourceCost(headResource.type);
+          }
+          
+          // Flag security-sensitive additions
+          if (headResource.type === 'aws_security_group' || headResource.type === 'aws_security_group_rule') {
+            iacChanges.push(`SECURITY_GROUP_ADDITION: ${address}`);
+          }
+        } else {
+          // Deep comparison of resource properties
+          const change = headResource.change || {};
+          const actions = change.actions || [];
+          
+          if (actions.includes('update') || actions.includes('modify')) {
+            // Extract before and after states for comparison
+            const beforeState = change.before || baseResource.change?.after || {};
+            const afterState = change.after || {};
+            
+            // Perform detailed property comparison
+            const propertyChanges = utils.compareResourceProperties(
+              beforeState,
+              afterState,
+              address
+            );
+            
+            // Add high-level change for risk scorer compatibility
+            if (propertyChanges.length > 0) {
+              iacChanges.push(`RESOURCE_MODIFICATION: ${headResource.type} - ${address}`);
+              
+              // Add detailed property changes
+              for (const propChange of propertyChanges) {
+                iacChanges.push(propChange.detailed);
+                
+                // Flag security-sensitive changes
+                if (propChange.isSecuritySensitive) {
+                  if (!iacChanges.includes(`SECURITY_GROUP_CHANGE: ${address}`)) {
+                    iacChanges.push(`SECURITY_GROUP_CHANGE: ${address}`);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    // Check if cost increase exceeds threshold
+    if (estimatedCostIncrease > parseFloat(costThreshold)) {
+      iacChanges.push(`COST_INCREASE: Estimated $${estimatedCostIncrease}/month`);
+    }
+    
+    // Score the changes using existing risk scorer
+    if (iacChanges.length > 0) {
+      const scoringResult = riskScorer.scoreChanges(iacChanges, 'INFRASTRUCTURE');
+      
+      return {
+        type: 'infrastructure',
+        file: terraformPath,
+        severity: scoringResult.severity,
+        changes: iacChanges,
+        reasoning: scoringResult.reasoning,
+        costImpact: estimatedCostIncrease > 0 ? `$${estimatedCostIncrease}/month` : null
+      };
+    }
+  } catch (error) {
+    core.warning(`Terraform plan analysis failed: ${error.message}`);
+  }
+  
+  return null;
+}
+
+module.exports = {
+  analyzeTerraformPlan
+};
