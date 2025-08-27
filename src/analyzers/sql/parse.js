@@ -1,5 +1,6 @@
 const core = require('@actions/core');
 const { Parser } = require('node-sql-parser');
+const { splitQuery, mysqlSplitterOptions, postgreSplitterOptions, mssqlSplitterOptions } = require('dbgate-query-splitter');
 const { detectSqlDialect } = require('./classify');
 const { extractTableName, extractColumnName } = require('./utils');
 
@@ -7,26 +8,88 @@ const { extractTableName, extractColumnName } = require('./utils');
  * SQL Parsing utilities - AST-based and fallback regex parsing
  */
 
-// Parse SQL using AST for accurate analysis
-function parseSqlWithAst(content, filename) {
+// Map our dialect detection to dbgate splitter options
+function getSplitterOptions(dialect) {
+  switch (dialect?.toLowerCase()) {
+    case 'mysql':
+    case 'mariadb':
+      return mysqlSplitterOptions;
+    case 'postgresql':
+    case 'postgres':
+      return postgreSplitterOptions;
+    case 'mssql':
+    case 'transactsql':
+      return mssqlSplitterOptions;
+    default:
+      return mysqlSplitterOptions; // Safe default
+  }
+}
+
+// Parse SQL file using two-phase approach: full-file AST then statement-by-statement with robust splitting
+function parseSqlFile(content, filename) {
   const parser = new Parser();
-  const sqlChanges = [];
   const dialect = detectSqlDialect(content);
   
   core.info(`Detected SQL dialect: ${dialect} for ${filename}`);
-  
-  // Parse SQL into AST
-  const ast = parser.astify(content, { database: dialect });
-  const statements = Array.isArray(ast) ? ast : [ast];
   
   const droppedTables = new Set();
   const createdTables = new Set();
   const droppedColumns = new Map();
   const addedColumns = new Map();
+  const sqlChanges = [];
   
-  // Analyze each statement
-  for (const stmt of statements) {
-    analyzeStatement(stmt, sqlChanges, droppedTables, createdTables, droppedColumns, addedColumns);
+  // PHASE 1: Try to parse entire file at once (most efficient)
+  try {
+    const ast = parser.astify(content, { database: dialect });
+    const allStatements = Array.isArray(ast) ? ast : [ast];
+    core.info(`Successfully parsed all ${allStatements.length} statements in ${filename} using full-file AST mode`);
+    
+    for (const stmt of allStatements) {
+      analyzeStatement(stmt, sqlChanges, droppedTables, createdTables, droppedColumns, addedColumns);
+    }
+  } catch (fullFileParseError) {
+    // PHASE 2: Fall back to statement-by-statement parsing
+    core.warning(`Full-file AST parsing failed for ${filename}: ${fullFileParseError.message}. Using resilient statement-by-statement mode`);
+    
+    // Use dbgate-query-splitter for robust splitting
+    const splitterOptions = getSplitterOptions(dialect);
+    const statements = splitQuery(content, splitterOptions);
+    
+    for (const statementText of statements) {
+      if (!statementText || statementText.trim().length === 0) continue;
+      
+      try {
+        // Try AST parsing for individual statement
+        const ast = parser.astify(statementText, { database: dialect });
+        const parsedStatements = Array.isArray(ast) ? ast : [ast];
+        
+        for (const stmt of parsedStatements) {
+          analyzeStatement(stmt, sqlChanges, droppedTables, createdTables, droppedColumns, addedColumns);
+        }
+      } catch (singleStatementParseError) {
+        // Final fallback: regex analysis for this statement
+        core.warning(`AST parsing failed for statement in ${filename}. Reverting to regex for: "${statementText.substring(0, 70)}..."`);
+        const regexChanges = fallbackRegexAnalysis(statementText, filename);
+        sqlChanges.push(...regexChanges);
+
+        // CRITICAL FIX: Extract entities from failed statement for correlation engine
+        const entities = extractEntitiesFromContent(statementText);
+        for (const entity of entities) {
+          const entityLower = entity.toLowerCase();
+          // Intelligently categorize based on SQL keywords
+          const upperStatement = statementText.toUpperCase();
+          
+          if (upperStatement.includes('DROP TABLE') && upperStatement.includes(entity.toUpperCase())) {
+            droppedTables.add(entityLower);
+          } else if (upperStatement.includes('CREATE TABLE') && upperStatement.includes(entity.toUpperCase())) {
+            createdTables.add(entityLower);
+          } else {
+            // Default to createdTables to ensure entity isn't lost
+            createdTables.add(entityLower);
+          }
+        }
+      }
+    }
   }
   
   // Smart table rename detection (DROP+CREATE same table name)
@@ -56,7 +119,7 @@ function parseSqlWithAst(content, filename) {
     }
   }
   
-  // Return both changes and entities
+  // Compute entities from union of dropped/created tables (normalize to strings, non-empty)
   const entities = [...new Set([...droppedTables, ...createdTables])]
     .map(t => typeof t === 'string' ? t : String(t))
     .filter(t => t && t.length > 0);
@@ -312,7 +375,7 @@ function extractEntitiesFromContent(content) {
 }
 
 module.exports = {
-  parseSqlWithAst,
+  parseSqlFile,
   fallbackRegexAnalysis,
   extractEntitiesFromContent
 };

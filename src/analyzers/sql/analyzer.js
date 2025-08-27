@@ -2,7 +2,7 @@ const core = require('@actions/core');
 const riskScorer = require('../../risk-scorer');
 const { globToRegex } = require('../../comment-generator');
 const { isDmlOnly } = require('./classify');
-const { parseSqlWithAst, fallbackRegexAnalysis, extractEntitiesFromContent } = require('./parse');
+const { parseSqlFile } = require('./parse');
 
 /**
  * Main SQL Analyzer class - orchestrates SQL drift analysis
@@ -67,18 +67,10 @@ class SqlAnalyzer {
         continue;
       }
       
-      // Try to use AST-based parsing first
-      let parseResult = { sqlChanges: [], entities: [] };
-      try {
-        parseResult = parseSqlWithAst(content, filename);
-        sqlChanges = parseResult.sqlChanges;
-        core.info(`Successfully parsed ${filename} using SQL parser`);
-      } catch (parseError) {
-        // Fallback to regex-based parsing if AST parsing fails
-        core.warning(`AST parsing failed for ${filename}: ${parseError.message}. Using fallback regex analysis.`);
-        sqlChanges = fallbackRegexAnalysis(content, filename);
-        parseResult.entities = extractEntitiesFromContent(content);
-      }
+      // Use statement-by-statement parsing with internal fallback handling
+      const parseResult = parseSqlFile(content, filename);
+      sqlChanges = parseResult.sqlChanges;
+      core.info(`Successfully parsed ${filename} using statement-by-statement parser`);
       
       // Use centralized risk scorer for consistent severity assessment
       if (sqlChanges.length > 0) {
