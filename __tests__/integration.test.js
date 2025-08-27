@@ -1,4 +1,16 @@
-const { run, generateCommentBody, generateFixSuggestion, postOrUpdateComment } = require('../src/index');
+const { 
+  run, 
+  generateCommentBody, 
+  generateFixSuggestion, 
+  postOrUpdateComment,
+  extractMetadata,
+  generateEntityVariations,
+  findBestMatch,
+  detectApiOperations,
+  detectDbOperations,
+  operationsCorrelate,
+  identifyRootCauses
+} = require('../src/index');
 
 // Mock all external dependencies
 jest.mock('@actions/core');
@@ -102,6 +114,81 @@ describe('Integration Tests', () => {
   });
 
   describe('End-to-End Workflow', () => {
+    test('should prevent false positive correlations with improved matching', () => {
+      // Test case that would previously create false positives
+      // /users/products endpoint should NOT correlate with both users and products tables
+      const apiResult = {
+        type: 'api',
+        file: '/users/products',
+        endpoints: ['/users/products'],
+        changes: ['GET /users/products']
+      };
+      
+      const dbResultUsers = {
+        type: 'database',
+        entities: ['users'],
+        changes: ['CREATE TABLE users']
+      };
+      
+      const dbResultProducts = {
+        type: 'database', 
+        entities: ['products'],
+        changes: ['CREATE TABLE products']
+      };
+      
+      // Extract metadata
+      const apiMeta = extractMetadata(apiResult, []);
+      const dbUsersMeta = extractMetadata(dbResultUsers, []);
+      const dbProductsMeta = extractMetadata(dbResultProducts, []);
+      
+      // Test entity variations
+      const userProductsVars = generateEntityVariations('user_products');
+      const usersVars = generateEntityVariations('users');
+      const productsVars = generateEntityVariations('products');
+      
+      // Match should be weak for both
+      const matchUsers = findBestMatch(userProductsVars, usersVars);
+      const matchProducts = findBestMatch(userProductsVars, productsVars);
+      
+      // Both should have low confidence (substring matches but not strong)
+      expect(matchUsers.confidence).toBeLessThan(0.9);
+      expect(matchProducts.confidence).toBeLessThan(0.9);
+      
+      // The combined path should match better with a junction table
+      const userProductsTableVars = generateEntityVariations('user_products');
+      const matchJunction = findBestMatch(userProductsVars, userProductsTableVars);
+      expect(matchJunction.confidence).toBeGreaterThan(0.9); // Should be exact match
+    });
+    
+    test('should correctly correlate singular and plural entity forms', () => {
+      // Test that 'user' API correlates with 'users' table
+      const variations1 = generateEntityVariations('user');
+      const variations2 = generateEntityVariations('users');
+      const match = findBestMatch(variations1, variations2);
+      
+      expect(match.confidence).toBeGreaterThan(0.8);
+      expect(variations1).toContain('user');
+      expect(variations1).toContain('users');
+      expect(variations2).toContain('user');
+      expect(variations2).toContain('users');
+    });
+    
+    test('should handle snake_case and camelCase conversions', () => {
+      // Test case conversion matching
+      const camelVars = generateEntityVariations('userProfile');
+      const snakeVars = generateEntityVariations('user_profile');
+      const match = findBestMatch(camelVars, snakeVars);
+      
+      // Should have high confidence match (not necessarily 1.0 due to lowercase handling)
+      expect(match.confidence).toBeGreaterThan(0.8);
+      
+      // Check that variations include the right transformations
+      // userProfile should generate user_profile
+      expect(camelVars.some(v => v === 'user_profile' || v === 'userprofile')).toBe(true);
+      // user_profile should generate userprofile (without underscore)
+      expect(snakeVars).toContain('userprofile');
+    });
+    
     test('should complete full analysis with no drift detected', async () => {
       // Setup: No SQL files, no OpenAPI changes
       mockOctokit.rest.pulls.listFiles.mockResolvedValue({
@@ -591,6 +678,115 @@ describe('Integration Tests', () => {
       expect(body).toContain('DROP TABLE: legacy_users');
       expect(body).toContain('Explanation');
       expect(body).toContain('Consider backing up data');
+    });
+  });
+  
+  describe('Correlation Analysis', () => {
+    test('should detect API-database entity correlations with high confidence', () => {
+      const apiResult = {
+        type: 'api',
+        file: 'api/users.js',
+        endpoints: ['/users', '/users/{id}'],
+        metadata: extractMetadata({ type: 'api', endpoints: ['/users'] }, [])
+      };
+      
+      const dbResult = {
+        type: 'database',
+        entities: ['users'],
+        changes: ['CREATE TABLE users (id INT, name VARCHAR(100))'],
+        metadata: extractMetadata({ type: 'database', entities: ['users'] }, [])
+      };
+      
+      // Test entity variation matching
+      const apiEntity = 'users';
+      const dbEntity = 'user'; // Singular form
+      
+      const apiVars = generateEntityVariations(apiEntity);
+      const dbVars = generateEntityVariations(dbEntity);
+      const match = findBestMatch(apiVars, dbVars);
+      
+      expect(match.confidence).toBeGreaterThan(0.8);
+    });
+    
+    test('should detect operation correlations between API and database', () => {
+      // API with CRUD operations
+      const apiOps = detectApiOperations('/users', {
+        changes: ['POST /users', 'GET /users', 'PUT /users/{id}', 'DELETE /users/{id}']
+      });
+      
+      // Database with corresponding operations
+      const dbOps = detectDbOperations('CREATE TABLE users; INSERT INTO users; SELECT FROM users; UPDATE users; DELETE FROM users;');
+      
+      expect(apiOps).toContain('create');
+      expect(apiOps).toContain('read');
+      expect(apiOps).toContain('update');
+      expect(apiOps).toContain('delete');
+      
+      expect(dbOps).toContain('create');
+      expect(dbOps).toContain('read');
+      expect(dbOps).toContain('update');
+      expect(dbOps).toContain('delete');
+      
+      expect(operationsCorrelate(apiOps, dbOps)).toBe(true);
+    });
+    
+    test('should upgrade severity based on correlation impact', () => {
+      const result = {
+        type: 'api',
+        file: 'api/users.js',
+        severity: 'low',
+        changes: ['API change']
+      };
+      
+      const correlations = [
+        { source: result, target: { file: 'db/users.sql' }, confidence: 0.9, relationship: 'api_uses_table' },
+        { source: result, target: { file: 'config/db.js' }, confidence: 0.8, relationship: 'dependency' },
+        { source: { file: 'package.json' }, target: result, confidence: 0.75, relationship: 'dependency_affects_api' }
+      ];
+      
+      const riskScorer = require('../src/risk-scorer');
+      riskScorer.assessCorrelationImpact(result, correlations);
+      
+      // Should upgrade from low to medium due to 3 components affected
+      expect(result.severity).toBe('medium');
+      expect(result.correlationImpact.cascade).toBe(3);
+      expect(result.reasoning).toContainEqual(expect.stringContaining('cross-layer components'));
+    });
+    
+    test('should handle complex entity name variations', () => {
+      // Test various naming convention conversions
+      const testCases = [
+        { input: 'user_profiles', expected: ['user_profiles', 'user_profile', 'userprofiles'] },
+        { input: 'UserProfile', expected: ['userprofile', 'userprofiles', 'user_profile'] },
+        { input: 'tbl_users', expected: ['tbl_users', 'users', 'user'] },
+        { input: 'categories', expected: ['categories', 'category', 'categorie'] }
+      ];
+      
+      testCases.forEach(({ input, expected }) => {
+        const variations = generateEntityVariations(input);
+        expected.forEach(exp => {
+          expect(variations).toContain(exp);
+        });
+      });
+    });
+    
+    test('should correctly identify root causes in correlation graph', () => {
+      const result1 = { id: 1, type: 'configuration', file: 'package.json' };
+      const result2 = { id: 2, type: 'api', file: 'api/users.js' };
+      const result3 = { id: 3, type: 'database', file: 'db/migrations/001.sql' };
+      
+      const correlations = [
+        { source: result1, target: result2, confidence: 0.8 }, // package affects API
+        { source: result1, target: result3, confidence: 0.7 }, // package affects DB
+        { source: result2, target: result3, confidence: 0.9 }  // API relates to DB
+      ];
+      
+      const rootCauses = identifyRootCauses(correlations, [result1, result2, result3]);
+      
+      // result1 (package.json) should be identified as root cause (only outgoing edges)
+      expect(rootCauses).toHaveLength(1);
+      expect(rootCauses[0].result).toBe(result1);
+      expect(rootCauses[0].type).toBe('root_cause');
     });
   });
 });

@@ -114,13 +114,16 @@ class SqlAnalyzer {
       }
       
       // Try to use AST-based parsing first
+      let parseResult = { sqlChanges: [], entities: [] };
       try {
-        sqlChanges = this.parseSqlWithAst(content, filename);
+        parseResult = this.parseSqlWithAst(content, filename);
+        sqlChanges = parseResult.sqlChanges;
         core.info(`Successfully parsed ${filename} using SQL parser`);
       } catch (parseError) {
         // Fallback to regex-based parsing if AST parsing fails
         core.warning(`AST parsing failed for ${filename}: ${parseError.message}. Using fallback regex analysis.`);
         sqlChanges = this.fallbackRegexAnalysis(content, filename);
+        parseResult.entities = this.extractEntitiesFromContent(content);
       }
       
       // Use centralized risk scorer for consistent severity assessment
@@ -140,9 +143,9 @@ class SqlAnalyzer {
           severity: scoringResult.severity,
           changes: sqlChanges,
           reasoning: scoringResult.reasoning,
-          tablesAnalyzed: [...droppedTables, ...createdTables].length,
+          tablesAnalyzed: parseResult.entities.length,
           // Add metadata for correlation
-          entities: [...new Set([...droppedTables, ...createdTables])],
+          entities: parseResult.entities,
           operations: sqlChanges.map(c => c.split(':')[0].trim())
         });
       }
@@ -173,7 +176,11 @@ class SqlAnalyzer {
     }
     
     // Smart table rename detection (DROP+CREATE same table name)
-    const renamedTables = new Set([...droppedTables].filter(table => createdTables.has(table.toLowerCase())));
+    const renamedTables = new Set([...droppedTables].filter(table => {
+      // Ensure we're comparing strings properly
+      const tableLower = typeof table === 'string' ? table.toLowerCase() : String(table).toLowerCase();
+      return createdTables.has(tableLower);
+    }));
     for (const table of renamedTables) {
       // Remove from high-severity drops if it's a rename
       const dropIndex = sqlChanges.findIndex(change => change.includes(`DROP TABLE: ${table}`));
@@ -195,7 +202,12 @@ class SqlAnalyzer {
       }
     }
     
-    return sqlChanges;
+    // Return both changes and entities
+    const entities = [...new Set([...droppedTables, ...createdTables])]
+      .map(t => typeof t === 'string' ? t : String(t))
+      .filter(t => t && t.length > 0);
+    
+    return { sqlChanges, entities };
   }
 
   // Analyze individual SQL statement from AST
@@ -226,18 +238,20 @@ class SqlAnalyzer {
     if (keyword === 'table') {
       const tableName = this.extractTableName(stmt);
       if (tableName) {
-        droppedTables.add(tableName.toLowerCase());
-        sqlChanges.push(`DROP TABLE: ${tableName}`);
-        core.info(`Found DROP TABLE: ${tableName}`);
+        const tableNameStr = typeof tableName === 'string' ? tableName : String(tableName);
+        droppedTables.add(tableNameStr.toLowerCase());
+        sqlChanges.push(`DROP TABLE: ${tableNameStr}`);
+        core.info(`Found DROP TABLE: ${tableNameStr}`);
       }
     } else if (keyword === 'column' && stmt.column) {
       const columnName = stmt.column.column || stmt.column;
       const tableName = this.extractTableName(stmt);
       if (tableName && columnName) {
-        if (!droppedColumns.has(tableName)) droppedColumns.set(tableName, []);
-        droppedColumns.get(tableName).push(columnName);
+        const tableNameStr = typeof tableName === 'string' ? tableName : String(tableName);
+        if (!droppedColumns.has(tableNameStr)) droppedColumns.set(tableNameStr, []);
+        droppedColumns.get(tableNameStr).push(columnName);
         sqlChanges.push(`DROP COLUMN: ${columnName}`);
-        core.info(`Found DROP COLUMN: ${columnName} from table ${tableName}`);
+        core.info(`Found DROP COLUMN: ${columnName} from table ${tableNameStr}`);
       }
     } else if (keyword === 'constraint' && stmt.name) {
       sqlChanges.push(`DROP CONSTRAINT: ${stmt.name}`);
@@ -251,8 +265,9 @@ class SqlAnalyzer {
     if (keyword === 'table') {
       const tableName = this.extractTableName(stmt);
       if (tableName) {
-        createdTables.add(tableName.toLowerCase());
-        core.info(`Found CREATE TABLE: ${tableName}`);
+        const tableNameStr = typeof tableName === 'string' ? tableName : String(tableName);
+        createdTables.add(tableNameStr.toLowerCase());
+        core.info(`Found CREATE TABLE: ${tableNameStr}`);
       }
     }
   }
@@ -427,6 +442,33 @@ class SqlAnalyzer {
     }
     
     return sqlChanges;
+  }
+  
+  // Extract entities from SQL content using regex (fallback method)
+  extractEntitiesFromContent(content) {
+    const entities = new Set();
+    const patterns = [
+      /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"']?(\w+)[`"']?/gi,
+      /ALTER\s+TABLE\s+[`"']?(\w+)[`"']?/gi,
+      /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?[`"']?(\w+)[`"']?/gi,
+      /FROM\s+[`"']?(\w+)[`"']?/gi,
+      /JOIN\s+[`"']?(\w+)[`"']?/gi,
+      /UPDATE\s+[`"']?(\w+)[`"']?/gi,
+      /INSERT\s+INTO\s+[`"']?(\w+)[`"']?/gi
+    ];
+    
+    patterns.forEach(pattern => {
+      let match;
+      while ((match = pattern.exec(content)) !== null) {
+        const tableName = match[1].toLowerCase();
+        // Skip common SQL keywords
+        if (!['select', 'from', 'where', 'and', 'or', 'as', 'on', 'set'].includes(tableName)) {
+          entities.add(tableName);
+        }
+      }
+    });
+    
+    return Array.from(entities);
   }
 }
 

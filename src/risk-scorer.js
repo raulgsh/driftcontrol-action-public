@@ -85,6 +85,80 @@ const riskScorer = {
     }
     
     return result;
+  },
+  
+  // Assess correlation impact on severity
+  assessCorrelationImpact(result, correlations) {
+    const core = require('@actions/core');
+    
+    // If no correlations, return result unchanged
+    if (!correlations || correlations.length === 0) return result;
+    
+    // Count high-confidence correlations involving this result
+    const strongCorrelations = correlations.filter(c => 
+      c.confidence > 0.7 && (c.source === result || c.target === result)
+    );
+    
+    const impactCount = strongCorrelations.length;
+    
+    // Calculate cascade impact (how many other components are affected)
+    const affectedComponents = new Set();
+    strongCorrelations.forEach(c => {
+      if (c.source === result) affectedComponents.add(c.target.file || c.target.type);
+      if (c.target === result) affectedComponents.add(c.source.file || c.source.type);
+    });
+    
+    const cascadeImpact = affectedComponents.size;
+    
+    // Store correlation details in result
+    result.correlationImpact = {
+      count: impactCount,
+      cascade: cascadeImpact,
+      correlations: strongCorrelations
+    };
+    
+    // Upgrade severity based on correlation impact
+    const originalSeverity = result.severity;
+    
+    if (cascadeImpact >= 3 && result.severity === 'medium') {
+      result.severity = 'high';
+      result.reasoning = [...(result.reasoning || []), 
+        `Upgraded from medium to high severity: affects ${cascadeImpact} cross-layer components`
+      ];
+      core.info(`Correlation impact: upgraded ${result.file || result.type} from medium to high (${cascadeImpact} components affected)`);
+    } else if (cascadeImpact >= 2 && result.severity === 'low') {
+      result.severity = 'medium';
+      result.reasoning = [...(result.reasoning || []), 
+        `Upgraded from low to medium severity: affects ${cascadeImpact} cross-layer components`
+      ];
+      core.info(`Correlation impact: upgraded ${result.file || result.type} from low to medium (${cascadeImpact} components affected)`);
+    } else if (impactCount >= 4 && result.severity !== 'high') {
+      // Many correlations even if not all different components
+      result.severity = 'high';
+      result.reasoning = [...(result.reasoning || []), 
+        `Upgraded to high severity: ${impactCount} strong cross-layer correlations detected`
+      ];
+      core.info(`Correlation impact: upgraded ${result.file || result.type} to high (${impactCount} strong correlations)`);
+    }
+    
+    // Add correlation details to reasoning if severity was upgraded
+    if (result.severity !== originalSeverity) {
+      const correlationTypes = [...new Set(strongCorrelations.map(c => c.relationship))];
+      result.reasoning.push(`Correlation types: ${correlationTypes.join(', ')}`);
+      
+      // Add specific impact details
+      if (strongCorrelations.some(c => c.relationship === 'api_uses_table')) {
+        result.reasoning.push('API endpoints directly depend on affected database tables');
+      }
+      if (strongCorrelations.some(c => c.relationship === 'operation_alignment')) {
+        result.reasoning.push('Database operations align with API CRUD operations');
+      }
+      if (strongCorrelations.some(c => c.relationship === 'dependency_affects_api' || c.relationship === 'dependency_affects_db')) {
+        result.reasoning.push('Package dependency changes affect multiple layers');
+      }
+    }
+    
+    return result;
   }
 };
 
