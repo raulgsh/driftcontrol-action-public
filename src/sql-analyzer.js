@@ -317,17 +317,23 @@ class SqlAnalyzer {
       return null;
     }
     
-    // Try to extract string from known properties
-    const tableName = nameNode.table || nameNode.name || nameNode.value;
+    // Handle schema-qualified names (e.g., public.users or dbo.customers)
+    let schemaName = null;
+    let tableName = null;
     
-    // Return only if it's a string
-    if (typeof tableName === 'string') {
-      return tableName;
+    // Check for schema/database qualifier
+    if (typeof nameNode === 'object' && nameNode !== null) {
+      schemaName = nameNode.db || nameNode.schema;
+      tableName = nameNode.table || nameNode.name || nameNode.value;
+    } else if (typeof nameNode === 'string') {
+      tableName = nameNode;
     }
     
-    // As a final fallback, the node itself might be the string
-    if (typeof nameNode === 'string') {
-      return nameNode;
+    // Build fully qualified name if schema is present
+    if (schemaName && tableName) {
+      return `${schemaName}.${tableName}`;
+    } else if (typeof tableName === 'string') {
+      return tableName;
     }
     
     // Prevent returning objects
@@ -383,9 +389,9 @@ class SqlAnalyzer {
     
     // Check for destructive operations (HIGH severity) - improved regex to handle quoted identifiers
     const destructivePatterns = [
-      { pattern: /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([\w`"\[\]]+)/gi, type: 'DROP TABLE' },
+      { pattern: /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?((?:[\w`"\[\]]+\.)?[\w`"\[\]]+)/gi, type: 'DROP TABLE' },
       { pattern: /DROP\s+COLUMN\s+([\w`"\[\]]+)/gi, type: 'DROP COLUMN' },
-      { pattern: /TRUNCATE\s+TABLE\s+([\w`"\[\]]+)/gi, type: 'TRUNCATE TABLE' },
+      { pattern: /TRUNCATE\s+TABLE\s+((?:[\w`"\[\]]+\.)?[\w`"\[\]]+)/gi, type: 'TRUNCATE TABLE' },
       { pattern: /DROP\s+CONSTRAINT\s+([\w`"\[\]]+)/gi, type: 'DROP CONSTRAINT' }
     ];
     
@@ -407,7 +413,7 @@ class SqlAnalyzer {
         } else if (type === 'DROP COLUMN') {
           // Extract table name from context
           const beforeMatch = content.substring(0, match.index);
-          const tableMatch = beforeMatch.match(/ALTER\s+TABLE\s+([\w`"\[\]]+)/gi);
+          const tableMatch = beforeMatch.match(/ALTER\s+TABLE\s+((?:[\w`"\[\]]+\.)?[\w`"\[\]]+)/gi);
           if (tableMatch) {
             const tableName = tableMatch[tableMatch.length - 1].split(/\s+/)[2].replace(/[`"\[\]]/g, '');
             if (!droppedColumns.has(tableName)) droppedColumns.set(tableName, []);
@@ -421,7 +427,7 @@ class SqlAnalyzer {
     }
     
     // Check for table creations
-    const createTablePattern = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w`"\[\]]+)/gi;
+    const createTablePattern = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?((?:[\w`"\[\]]+\.)?[\w`"\[\]]+)/gi;
     let match;
     while ((match = createTablePattern.exec(content)) !== null) {
       const tableName = match[1].replace(/[`"\[\]]/g, '');
@@ -442,7 +448,7 @@ class SqlAnalyzer {
     const addColumnPattern = /ADD\s+(?:COLUMN\s+)?([\w`"\[\]]+)/gi;
     while ((match = addColumnPattern.exec(content)) !== null) {
       const beforeMatch = content.substring(0, match.index);
-      const tableMatch = beforeMatch.match(/ALTER\s+TABLE\s+([\w`"\[\]]+)/gi);
+      const tableMatch = beforeMatch.match(/ALTER\s+TABLE\s+((?:[\w`"\[\]]+\.)?[\w`"\[\]]+)/gi);
       if (tableMatch) {
         const tableName = tableMatch[tableMatch.length - 1].split(/\s+/)[2].replace(/[`"\[\]]/g, '');
         const columnName = match[1].replace(/[`"\[\]]/g, '');
@@ -464,7 +470,7 @@ class SqlAnalyzer {
     }
     
     // Check for type-narrowing operations (PostgreSQL syntax)
-    const typeNarrowingPattern = /ALTER\s+(?:TABLE\s+[\w`"\[\]]+\s+ALTER\s+)?COLUMN\s+([\w`"\[\]]+)\s+TYPE\s+(\w+)/gi;
+    const typeNarrowingPattern = /ALTER\s+(?:TABLE\s+(?:[\w`"\[\]]+\.)?[\w`"\[\]]+\s+ALTER\s+)?COLUMN\s+([\w`"\[\]]+)\s+TYPE\s+(\w+)/gi;
     while ((match = typeNarrowingPattern.exec(content)) !== null) {
       const columnName = match[1].replace(/[`"\[\]]/g, '');
       sqlChanges.push(`TYPE NARROWING: ${columnName} -> ${match[2]}`);
@@ -491,13 +497,13 @@ class SqlAnalyzer {
   extractEntitiesFromContent(content) {
     const entities = new Set();
     const patterns = [
-      /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"']?(\w+)[`"']?/gi,
-      /ALTER\s+TABLE\s+[`"']?(\w+)[`"']?/gi,
-      /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?[`"']?(\w+)[`"']?/gi,
-      /FROM\s+[`"']?(\w+)[`"']?/gi,
-      /JOIN\s+[`"']?(\w+)[`"']?/gi,
-      /UPDATE\s+[`"']?(\w+)[`"']?/gi,
-      /INSERT\s+INTO\s+[`"']?(\w+)[`"']?/gi
+      /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"'\[]?((?:\w+\.)?[\w]+)[`"'\]]?/gi,
+      /ALTER\s+TABLE\s+[`"'\[]?((?:\w+\.)?[\w]+)[`"'\]]?/gi,
+      /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?[`"'\[]?((?:\w+\.)?[\w]+)[`"'\]]?/gi,
+      /FROM\s+[`"'\[]?((?:\w+\.)?[\w]+)[`"'\]]?/gi,
+      /JOIN\s+[`"'\[]?((?:\w+\.)?[\w]+)[`"'\]]?/gi,
+      /UPDATE\s+[`"'\[]?((?:\w+\.)?[\w]+)[`"'\]]?/gi,
+      /INSERT\s+INTO\s+[`"'\[]?((?:\w+\.)?[\w]+)[`"'\]]?/gi
     ];
     
     patterns.forEach(pattern => {

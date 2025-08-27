@@ -507,5 +507,115 @@ describe('SqlAnalyzer', () => {
       expect(result.driftResults).toHaveLength(1);
       expect(result.driftResults[0].file).toBe('db/migrations/001.sql');
     });
+
+    test('should handle schema-qualified table names in DROP TABLE', async () => {
+      const files = [
+        { filename: 'migrations/001.sql', status: 'added' }
+      ];
+
+      mockOctokit.rest.repos.getContent.mockResolvedValueOnce({
+        data: { content: Buffer.from('DROP TABLE public.users; DROP TABLE dbo.customers;').toString('base64') }
+      });
+
+      mockRiskScorer.scoreChanges.mockReturnValue({
+        severity: 'high',
+        reasoning: ['Contains destructive or breaking operations']
+      });
+
+      const result = await sqlAnalyzer.analyzeSqlFiles(
+        files, mockOctokit, baseParams.owner, baseParams.repo, 
+        baseParams.pullRequestHeadSha, baseParams.sqlGlob
+      );
+
+      expect(mockRiskScorer.scoreChanges).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          'DROP TABLE: public.users',
+          'DROP TABLE: dbo.customers'
+        ]), 
+        'SQL'
+      );
+      expect(result.hasHighSeverity).toBe(true);
+      expect(result.driftResults[0].changes).toContain('DROP TABLE: public.users');
+      expect(result.driftResults[0].changes).toContain('DROP TABLE: dbo.customers');
+    });
+
+    test('should handle schema-qualified table names in CREATE TABLE', async () => {
+      const files = [
+        { filename: 'migrations/002.sql', status: 'added' }
+      ];
+
+      // Create SQL that triggers the fallback regex analysis by using a syntax that the parser might not handle
+      const sql = `-- Complex SQL that may fail AST parsing
+        DROP TABLE IF EXISTS schema1.old_table;
+        CREATE TABLE schema1.new_table (id INT);
+        ALTER TABLE public.users ADD COLUMN email VARCHAR(255);
+        TRUNCATE TABLE staging.temp_data;`;
+
+      mockOctokit.rest.repos.getContent.mockResolvedValueOnce({
+        data: { content: Buffer.from(sql).toString('base64') }
+      });
+
+      mockRiskScorer.scoreChanges.mockReturnValue({
+        severity: 'high',
+        reasoning: ['Contains destructive or breaking operations']
+      });
+
+      const result = await sqlAnalyzer.analyzeSqlFiles(
+        files, mockOctokit, baseParams.owner, baseParams.repo, 
+        baseParams.pullRequestHeadSha, baseParams.sqlGlob
+      );
+
+      // Should detect the schema rename (DROP + CREATE in same schema)
+      const changes = result.driftResults[0].changes;
+      expect(changes.some(c => c.includes('schema1.old_table') || c.includes('TABLE RENAME: schema1'))).toBe(true);
+      expect(changes.some(c => c.includes('TRUNCATE TABLE: staging.temp_data'))).toBe(true);
+    });
+
+    test('should handle SQL Server bracketed schema names', async () => {
+      const files = [
+        { filename: 'migrations/003.sql', status: 'added' }
+      ];
+
+      mockOctokit.rest.repos.getContent.mockResolvedValueOnce({
+        data: { content: Buffer.from('DROP TABLE [dbo].[users]; CREATE TABLE [staging].[users] (id INT);').toString('base64') }
+      });
+
+      mockRiskScorer.scoreChanges.mockReturnValue({
+        severity: 'high',
+        reasoning: ['Contains destructive or breaking operations']
+      });
+
+      const result = await sqlAnalyzer.analyzeSqlFiles(
+        files, mockOctokit, baseParams.owner, baseParams.repo, 
+        baseParams.pullRequestHeadSha, baseParams.sqlGlob
+      );
+
+      const changes = result.driftResults[0].changes;
+      expect(changes.length).toBeGreaterThan(0);
+      expect(result.hasHighSeverity).toBe(true);
+    });
+
+    test('should extract schema-qualified entities correctly', async () => {
+      const files = [
+        { filename: 'migrations/004.sql', status: 'added' }
+      ];
+
+      const sql = `INSERT INTO public.users VALUES (1, 'test');
+        UPDATE staging.customers SET status = 'active';
+        SELECT * FROM reporting.metrics JOIN analytics.events ON id = event_id;`;
+
+      mockOctokit.rest.repos.getContent.mockResolvedValueOnce({
+        data: { content: Buffer.from(sql).toString('base64') }
+      });
+
+      // This is DML only, so should be skipped
+      const result = await sqlAnalyzer.analyzeSqlFiles(
+        files, mockOctokit, baseParams.owner, baseParams.repo, 
+        baseParams.pullRequestHeadSha, baseParams.sqlGlob
+      );
+
+      expect(core.info).toHaveBeenCalledWith('Skipping DML-only migration: migrations/004.sql');
+      expect(result.driftResults).toEqual([]);
+    });
   });
 });
