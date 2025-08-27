@@ -298,6 +298,32 @@ class ConfigAnalyzer {
           if (dockerResult.severity === 'medium') hasMediumSeverity = true;
         }
       }
+
+      // Analyze .env files
+      const envFiles = files.filter(f => f.filename.endsWith('.env'));
+      for (const file of envFiles) {
+        const envResult = await this.analyzeEnvFile(
+          octokit, owner, repo, pullRequestHeadSha, pullRequestBaseSha, file.filename
+        );
+        if (envResult) {
+          driftResults.push(envResult);
+          if (envResult.severity === 'high') hasHighSeverity = true;
+          if (envResult.severity === 'medium') hasMediumSeverity = true;
+        }
+      }
+
+      // Analyze .properties files
+      const propertiesFiles = files.filter(f => f.filename.endsWith('.properties'));
+      for (const file of propertiesFiles) {
+        const propResult = await this.analyzePropertiesFile(
+          octokit, owner, repo, pullRequestHeadSha, pullRequestBaseSha, file.filename
+        );
+        if (propResult) {
+          driftResults.push(propResult);
+          if (propResult.severity === 'high') hasHighSeverity = true;
+          if (propResult.severity === 'medium') hasMediumSeverity = true;
+        }
+      }
     } catch (error) {
       core.warning(`Config analysis error: ${error.message}`);
     }
@@ -310,6 +336,143 @@ class ConfigAnalyzer {
     return packageLockAnalysis.analyzePackageLock(
       octokit, owner, repo, pullRequestHeadSha, pullRequestBaseSha, lockPath
     );
+  }
+
+  async analyzeEnvFile(octokit, owner, repo, headSha, baseSha, filepath) {
+    try {
+      const { data: headData } = await octokit.rest.repos.getContent({
+        owner, repo, path: filepath, ref: headSha
+      });
+      
+      const headContent = Buffer.from(headData.content, 'base64').toString();
+      const headVars = this.parseEnvFile(headContent);
+      
+      let baseVars = {};
+      try {
+        const { data: baseData } = await octokit.rest.repos.getContent({
+          owner, repo, path: filepath, ref: baseSha
+        });
+        const baseContent = Buffer.from(baseData.content, 'base64').toString();
+        baseVars = this.parseEnvFile(baseContent);
+      } catch (e) {
+        // New file
+      }
+      
+      const changes = [];
+      const headKeys = Object.keys(headVars);
+      const baseKeys = Object.keys(baseVars);
+      
+      // Check for sensitive keys being added/removed
+      headKeys.filter(k => !baseKeys.includes(k)).forEach(k => {
+        if (this.sensitivePatterns.test(k)) {
+          changes.push(`ENV_SECRET_ADDED: ${k}`);
+        } else {
+          changes.push(`ENV_VAR_ADDED: ${k}`);
+        }
+      });
+      
+      baseKeys.filter(k => !headKeys.includes(k)).forEach(k => {
+        if (this.sensitivePatterns.test(k)) {
+          changes.push(`ENV_SECRET_REMOVED: ${k}`);
+        }
+      });
+      
+      if (changes.length > 0) {
+        const scoringResult = this.riskScorer.scoreChanges(changes, 'ENV_FILE');
+        return {
+          type: 'configuration',
+          file: filepath,
+          severity: scoringResult.severity,
+          changes: changes,
+          reasoning: scoringResult.reasoning
+        };
+      }
+    } catch (e) {
+      core.warning(`Env file analysis failed: ${e.message}`);
+    }
+    return null;
+  }
+
+  parseEnvFile(content) {
+    const vars = {};
+    content.split('\n').forEach(line => {
+      if (line && !line.startsWith('#')) {
+        const [key] = line.split('=');
+        if (key) vars[key.trim()] = true; // Only track keys, not values
+      }
+    });
+    return vars;
+  }
+
+  async analyzePropertiesFile(octokit, owner, repo, headSha, baseSha, filepath) {
+    try {
+      const { data: headData } = await octokit.rest.repos.getContent({
+        owner, repo, path: filepath, ref: headSha
+      });
+      
+      const headContent = Buffer.from(headData.content, 'base64').toString();
+      const headProps = this.parsePropertiesFile(headContent);
+      
+      let baseProps = {};
+      try {
+        const { data: baseData } = await octokit.rest.repos.getContent({
+          owner, repo, path: filepath, ref: baseSha
+        });
+        const baseContent = Buffer.from(baseData.content, 'base64').toString();
+        baseProps = this.parsePropertiesFile(baseContent);
+      } catch (e) {
+        // New file
+      }
+      
+      const changes = [];
+      const headKeys = Object.keys(headProps);
+      const baseKeys = Object.keys(baseProps);
+      
+      // Check for sensitive properties being added/removed
+      headKeys.filter(k => !baseKeys.includes(k)).forEach(k => {
+        if (this.sensitivePatterns.test(k)) {
+          changes.push(`PROPERTIES_SECRET_ADDED: ${k}`);
+        } else {
+          changes.push(`PROPERTIES_KEY_ADDED: ${k}`);
+        }
+      });
+      
+      baseKeys.filter(k => !headKeys.includes(k)).forEach(k => {
+        if (this.sensitivePatterns.test(k)) {
+          changes.push(`PROPERTIES_SECRET_REMOVED: ${k}`);
+        }
+      });
+      
+      if (changes.length > 0) {
+        const scoringResult = this.riskScorer.scoreChanges(changes, 'PROPERTIES_FILE');
+        return {
+          type: 'configuration',
+          file: filepath,
+          severity: scoringResult.severity,
+          changes: changes,
+          reasoning: scoringResult.reasoning
+        };
+      }
+    } catch (e) {
+      core.warning(`Properties file analysis failed: ${e.message}`);
+    }
+    return null;
+  }
+
+  parsePropertiesFile(content) {
+    const props = {};
+    content.split('\n').forEach(line => {
+      const trimmed = line.trim();
+      // Skip comments and empty lines
+      if (trimmed && !trimmed.startsWith('#') && !trimmed.startsWith('!')) {
+        // Handle both = and : separators, and line continuations
+        const match = trimmed.match(/^([^=:\s]+)\s*[=:]\s*/);
+        if (match) {
+          props[match[1]] = true; // Only track keys, not values
+        }
+      }
+    });
+    return props;
   }
 }
 

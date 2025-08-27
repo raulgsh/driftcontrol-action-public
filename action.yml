@@ -54,6 +54,14 @@ inputs:
     description: 'Vulnerability detection provider (static, github)'
     required: false
     default: 'static'
+  kubernetes_glob:
+    description: 'Glob pattern for Kubernetes manifest files'
+    required: false
+    default: '**/k8s/**/*.{yaml,yml}'
+  env_files:
+    description: 'Analyze .env files for secret changes'
+    required: false
+    default: 'true'
   llm_provider:
     description: 'LLM provider for enhanced explanations (openai or anthropic)'
     required: false

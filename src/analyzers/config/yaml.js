@@ -1,6 +1,7 @@
 // YAML and configuration analysis
 const core = require('@actions/core');
 const yaml = require('yaml');
+const toml = require('@iarna/toml');
 const riskScorer = require('../../risk-scorer');
 const { globToRegex } = require('../../comment-generator');
 const { extractKeysOnly, compareKeys, analyzeVersionChange, isKnownVulnerablePackage } = require('./utils');
@@ -25,7 +26,15 @@ async function analyzeYamlConfigs(files, octokit, owner, repo, pullRequestHeadSh
       });
       
       const headContent = Buffer.from(headData.content, 'base64').toString();
-      const headConfig = yaml.parse(headContent);
+      
+      // Parse based on file extension
+      let headConfig;
+      if (file.filename.endsWith('.toml')) {
+        headConfig = toml.parse(headContent);
+      } else {
+        headConfig = yaml.parse(headContent);
+      }
+      
       const headKeys = extractKeysOnly(headConfig);
       
       // Try to fetch base version
@@ -39,7 +48,15 @@ async function analyzeYamlConfigs(files, octokit, owner, repo, pullRequestHeadSh
         });
         
         const baseContent = Buffer.from(baseData.content, 'base64').toString();
-        const baseConfig = yaml.parse(baseContent);
+        
+        // Parse base config based on file extension
+        let baseConfig;
+        if (file.filename.endsWith('.toml')) {
+          baseConfig = toml.parse(baseContent);
+        } else {
+          baseConfig = yaml.parse(baseContent);
+        }
+        
         baseKeys = extractKeysOnly(baseConfig);
       } catch (e) {
         // File might be new
