@@ -22,6 +22,7 @@ async function run() {
     const configYamlGlob = core.getInput('config_yaml_glob');
     const featureFlagsPath = core.getInput('feature_flags_path');
     const correlationConfigPath = core.getInput('correlation_config_path');
+    const vulnerabilityProvider = core.getInput('vulnerability_provider') || 'static';
     
     // LLM configuration for enhanced explanations
     const llmProvider = core.getInput('llm_provider');
@@ -85,6 +86,15 @@ async function run() {
     const openApiAnalyzer = new OpenApiAnalyzer();
     const iacAnalyzer = new IaCAnalyzer();
     const configAnalyzer = new ConfigAnalyzer();
+    
+    // Initialize vulnerability provider before analysis
+    await configAnalyzer.initializeVulnerabilityProvider(octokit, {
+      provider: vulnerabilityProvider,
+      owner: context.repo.owner,
+      repo: context.repo.repo,
+      baseSha: context.payload.pull_request.base.sha,
+      headSha: context.payload.pull_request.head.sha
+    });
     
     // Load correlation configuration if provided
     let correlationConfig = null;

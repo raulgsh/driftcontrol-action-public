@@ -28,6 +28,9 @@ class ConfigAnalyzer {
     
     // Expose analysis methods for testing
     this.analyzePackageJson = yamlAnalysis.analyzePackageJson;
+    
+    // Initialize vulnerability provider
+    this.vulnerabilityProvider = null;
   }
 
   // Load user-defined correlation configuration from .github/driftcontrol.yml
@@ -214,6 +217,27 @@ class ConfigAnalyzer {
         configPath: correlationConfigPath,
         loaded: false
       };
+    }
+  }
+
+  async initializeVulnerabilityProvider(octokit, config = {}) {
+    const { provider = 'static', owner, repo, baseSha, headSha } = config;
+    
+    if (provider === 'github' && octokit) {
+      const { GitHubAdvisoryProvider, setVulnerabilityProvider } = require('./utils');
+      this.vulnerabilityProvider = new GitHubAdvisoryProvider(octokit);
+      
+      // Critical: Initialize ONCE with PR context
+      await this.vulnerabilityProvider.initialize({ owner, repo, baseSha, headSha });
+      
+      setVulnerabilityProvider(this.vulnerabilityProvider);
+      core.info('Using GitHub Advisory Database for vulnerability detection');
+    } else {
+      const { StaticListProvider, setVulnerabilityProvider } = require('./utils');
+      this.vulnerabilityProvider = new StaticListProvider();
+      await this.vulnerabilityProvider.initialize();
+      setVulnerabilityProvider(this.vulnerabilityProvider);
+      core.info('Using static vulnerability list (fallback)');
     }
   }
 

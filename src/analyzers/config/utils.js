@@ -91,8 +91,85 @@ function compareVersions(v1, v2) {
   return 0;
 }
 
-// Basic security vulnerability check - NOT comprehensive
-function isKnownVulnerablePackage(packageName, version) {
+// Vulnerability provider system - pluggable vulnerability detection
+class VulnerabilityProvider {
+  async initialize(options = {}) {
+    // One-time setup per PR
+  }
+  
+  isVulnerable(packageName, version) {
+    throw new Error('Provider must implement isVulnerable()');
+  }
+}
+
+class GitHubAdvisoryProvider extends VulnerabilityProvider {
+  constructor(octokit) {
+    super();
+    this.octokit = octokit;
+    this.vulnerabilities = new Map(); // Cache for entire PR
+    this.initialized = false;
+  }
+
+  async initialize({ owner, repo, baseSha, headSha }) {
+    if (this.initialized) return; // Prevent duplicate calls
+    
+    try {
+      core.info('Fetching vulnerability data from GitHub Dependency Review API...');
+      const basehead = `${baseSha}...${headSha}`;
+      const { data } = await this.octokit.request(
+        'GET /repos/{owner}/{repo}/dependency-graph/compare/{basehead}',
+        { owner, repo, basehead, headers: { 'X-GitHub-Api-Version': '2022-11-28' }}
+      );
+
+      // Parse and cache all vulnerabilities ONCE
+      for (const dep of data) {
+        if (dep.vulnerabilities?.length > 0) {
+          const vulnInfo = {
+            vulnerabilities: dep.vulnerabilities,
+            severity: this.getHighestSeverity(dep.vulnerabilities),
+            version: dep.version
+          };
+          this.vulnerabilities.set(`${dep.name}@${dep.version}`, vulnInfo);
+        }
+      }
+      
+      this.initialized = true;
+      core.info(`Cached ${this.vulnerabilities.size} vulnerable packages from GitHub Advisory Database`);
+    } catch (e) {
+      core.warning(`GitHub Advisory API failed: ${e.message}. Dependency graph may not be enabled.`);
+      this.initialized = true; // Don't retry on failure
+    }
+  }
+
+  getHighestSeverity(vulns) {
+    const severityOrder = ['critical', 'high', 'moderate', 'low'];
+    return vulns.reduce((highest, v) => {
+      const current = (v.severity || 'moderate').toLowerCase();
+      return severityOrder.indexOf(current) < severityOrder.indexOf(highest) ? current : highest;
+    }, 'low');
+  }
+
+  isVulnerable(packageName, version) {
+    return this.vulnerabilities.has(`${packageName}@${version}`);
+  }
+  
+  getVulnerabilityInfo(packageName, version) {
+    return this.vulnerabilities.get(`${packageName}@${version}`);
+  }
+}
+
+class StaticListProvider extends VulnerabilityProvider {
+  async initialize() {
+    // No initialization needed for static list
+  }
+  
+  isVulnerable(packageName, version) {
+    return isKnownVulnerablePackageStatic(packageName, version);
+  }
+}
+
+// Basic security vulnerability check - NOT comprehensive (renamed from original)
+function isKnownVulnerablePackageStatic(packageName, version) {
   // IMPORTANT: This is a basic check for demonstration purposes only.
   // For comprehensive security scanning, users should integrate:
   // - npm audit (run in CI/CD pipeline)
@@ -157,11 +234,29 @@ function isKnownVulnerablePackage(packageName, version) {
   return false;
 }
 
+// Global provider state
+let activeProvider = null;
+
+function setVulnerabilityProvider(provider) {
+  activeProvider = provider;
+}
+
+function isKnownVulnerablePackage(packageName, version) {
+  if (!activeProvider) {
+    return isKnownVulnerablePackageStatic(packageName, version);
+  }
+  return activeProvider.isVulnerable(packageName, version);
+}
+
 module.exports = {
   sensitivePatterns,
   extractKeysOnly,
   compareKeys,
   analyzeVersionChange,
   compareVersions,
+  VulnerabilityProvider,
+  GitHubAdvisoryProvider,
+  StaticListProvider,
+  setVulnerabilityProvider,
   isKnownVulnerablePackage
 };

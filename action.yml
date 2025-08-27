@@ -50,6 +50,10 @@ inputs:
     description: 'Path to correlation configuration file for explicit relationship mappings'
     required: false
     default: '.github/driftcontrol.yml'
+  vulnerability_provider:
+    description: 'Vulnerability detection provider (static, github)'
+    required: false
+    default: 'static'
   llm_provider:
     description: 'LLM provider for enhanced explanations (openai or anthropic)'
     required: false
