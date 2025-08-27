@@ -446,14 +446,34 @@ function shortenPath(path) {
 function globToRegex(glob) {
   let pattern;
   if (glob.includes('**/')) {
-    const parts = glob.split('**/');
-    const prefix = parts[0].replace(/\./g, '\\.');
-    const suffix = parts[1]
-      .replace(/\./g, '\\.')
-      .replace(/\*/g, '[^/]*');
-    pattern = `^${prefix}.*${suffix}$`;
+    // Split by **/ and handle all segments
+    const segments = glob.split('**/');
+    
+    // Escape and prepare each segment
+    const processedSegments = segments.map((segment, index) => {
+      // Escape dots and replace single wildcards
+      const escaped = segment
+        .replace(/\./g, '\\.')
+        .replace(/\*/g, '[^/]*');
+      
+      // First segment doesn't need wildcard prefix
+      if (index === 0) {
+        return escaped;
+      }
+      // Last segment doesn't need wildcard suffix
+      if (index === segments.length - 1) {
+        return escaped;
+      }
+      // Middle segments are just patterns
+      return escaped;
+    });
+    
+    // Join with .* to match any directory depth
+    pattern = '^' + processedSegments.join('.*') + '$';
   } else {
-    pattern = glob
+    // Handle patterns without **/
+    // Need to anchor to start for non-** patterns
+    pattern = '^' + glob
       .replace(/\./g, '\\.')
       .replace(/\*\*/g, '.*')
       .replace(/\*/g, '[^/]*')

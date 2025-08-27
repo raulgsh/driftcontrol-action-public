@@ -1,4 +1,4 @@
-const { generateCommentBody, generateFixSuggestion, getLLMExplanation, generateImpactSummary } = require('../src/comment-generator');
+const { generateCommentBody, generateFixSuggestion, getLLMExplanation, generateImpactSummary, globToRegex } = require('../src/comment-generator');
 
 // Mock Date for consistent timestamps in tests
 const mockDate = new Date('2023-01-01T12:00:00.000Z');
@@ -416,6 +416,85 @@ describe('Comment Generator', () => {
     test('should export both functions', () => {
       expect(typeof generateCommentBody).toBe('function');
       expect(typeof generateFixSuggestion).toBe('function');
+    });
+  });
+
+  describe('globToRegex', () => {
+    test('should handle simple wildcard patterns', () => {
+      const regex = globToRegex('*.js');
+      expect(regex.test('file.js')).toBe(true);
+      expect(regex.test('script.js')).toBe(true);
+      expect(regex.test('file.ts')).toBe(false);
+      expect(regex.test('dir/file.js')).toBe(false);
+    });
+
+    test('should handle double wildcard patterns', () => {
+      const regex = globToRegex('**/*.js');
+      expect(regex.test('file.js')).toBe(true);
+      expect(regex.test('src/file.js')).toBe(true);
+      expect(regex.test('src/lib/file.js')).toBe(true);
+      expect(regex.test('file.ts')).toBe(false);
+    });
+
+    test('should handle multiple double wildcards', () => {
+      const regex = globToRegex('src/**/modules/**/*.js');
+      expect(regex.test('src/modules/file.js')).toBe(true);
+      expect(regex.test('src/app/modules/file.js')).toBe(true);
+      expect(regex.test('src/modules/core/file.js')).toBe(true);
+      expect(regex.test('src/app/modules/core/lib/file.js')).toBe(true);
+      expect(regex.test('src/app/modules/core/lib/file.ts')).toBe(false);
+      expect(regex.test('modules/file.js')).toBe(false);
+    });
+
+    test('should handle patterns with file extensions', () => {
+      const regex = globToRegex('**/*.{js,ts}');
+      // Note: This simple implementation doesn't handle brace expansion
+      // but it should at least handle the basic pattern
+      expect(regex.test('src/file.{js,ts}')).toBe(true);
+    });
+
+    test('should handle patterns starting with **/', () => {
+      const regex = globToRegex('**/test/**/*.spec.js');
+      expect(regex.test('test/unit/file.spec.js')).toBe(true);
+      expect(regex.test('src/test/unit/file.spec.js')).toBe(true);
+      expect(regex.test('test/file.spec.js')).toBe(true);
+      expect(regex.test('file.spec.js')).toBe(false);
+    });
+
+    test('should handle patterns without wildcards', () => {
+      const regex = globToRegex('src/index.js');
+      expect(regex.test('src/index.js')).toBe(true);
+      expect(regex.test('src/index.ts')).toBe(false);
+      expect(regex.test('index.js')).toBe(false);
+    });
+
+    test('should escape dots properly', () => {
+      const regex = globToRegex('*.config.js');
+      expect(regex.test('app.config.js')).toBe(true);
+      expect(regex.test('appconfigjs')).toBe(false);
+    });
+
+    test('should handle complex real-world patterns', () => {
+      const regex = globToRegex('src/**/migrations/**/*.sql');
+      expect(regex.test('src/migrations/001.sql')).toBe(true);
+      expect(regex.test('src/db/migrations/002.sql')).toBe(true);
+      expect(regex.test('src/app/db/migrations/v1/003.sql')).toBe(true);
+      expect(regex.test('migrations/001.sql')).toBe(false);
+      expect(regex.test('src/migrations/001.js')).toBe(false);
+    });
+
+    test('should handle patterns with single and double wildcards', () => {
+      const regex = globToRegex('src/**/*.test.*.js');
+      expect(regex.test('src/file.test.unit.js')).toBe(true);
+      expect(regex.test('src/lib/file.test.integration.js')).toBe(true);
+      expect(regex.test('src/file.test.js')).toBe(false); // Missing * between test and js
+    });
+
+    test('should handle edge case with trailing **/', () => {
+      const regex = globToRegex('src/**/');
+      expect(regex.test('src/')).toBe(true);
+      expect(regex.test('src/lib/')).toBe(true);
+      expect(regex.test('src/lib/core/')).toBe(true);
     });
   });
 

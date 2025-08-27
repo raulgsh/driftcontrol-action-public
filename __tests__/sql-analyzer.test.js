@@ -484,7 +484,7 @@ describe('SqlAnalyzer', () => {
       const customGlob = 'db/**/*.sql';
 
       mockOctokit.rest.repos.getContent.mockResolvedValueOnce({
-        data: { content: Buffer.from('CREATE TABLE test (id INT);').toString('base64') }
+        data: { content: Buffer.from('DROP TABLE old_test; CREATE TABLE test (id INT);').toString('base64') }
       });
 
       mockRiskScorer.scoreChanges.mockReturnValue({
@@ -492,14 +492,20 @@ describe('SqlAnalyzer', () => {
         reasoning: ['Contains backward-compatible changes']
       });
 
-      await sqlAnalyzer.analyzeSqlFiles(
+      const result = await sqlAnalyzer.analyzeSqlFiles(
         files, mockOctokit, baseParams.owner, baseParams.repo, 
         baseParams.pullRequestHeadSha, customGlob
       );
 
-      // No files match the custom glob pattern 'db/**/*.sql' due to regex conversion limitations
-      // So no SQL files are processed and no content is fetched
-      expect(mockOctokit.rest.repos.getContent).not.toHaveBeenCalled();
+      // Now that globToRegex is fixed, 'db/**/*.sql' correctly matches 'db/migrations/001.sql'
+      expect(mockOctokit.rest.repos.getContent).toHaveBeenCalledWith({
+        owner: baseParams.owner,
+        repo: baseParams.repo,
+        path: 'db/migrations/001.sql',
+        ref: baseParams.pullRequestHeadSha
+      });
+      expect(result.driftResults).toHaveLength(1);
+      expect(result.driftResults[0].file).toBe('db/migrations/001.sql');
     });
   });
 });
