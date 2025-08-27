@@ -10,6 +10,7 @@ const OperationCorrelationStrategy = require('./strategies/operation');
 const InfrastructureCorrelationStrategy = require('./strategies/infrastructure');
 const DependencyCorrelationStrategy = require('./strategies/dependency');
 const TemporalCorrelationStrategy = require('./strategies/temporal');
+const CodeAnalysisStrategy = require('./strategies/code');
 
 // Main cross-layer correlation function
 async function correlateAcrossLayers(driftResults, files, correlationConfig = null) {
@@ -34,7 +35,8 @@ async function correlateAcrossLayers(driftResults, files, correlationConfig = nu
     new OperationCorrelationStrategy(strategyConfig.operation || {}),
     new InfrastructureCorrelationStrategy(strategyConfig.infrastructure || {}),
     new DependencyCorrelationStrategy(strategyConfig.dependency || {}),
-    new TemporalCorrelationStrategy(strategyConfig.temporal || { enabled: false })
+    new TemporalCorrelationStrategy(strategyConfig.temporal || { enabled: false }),
+    new CodeAnalysisStrategy(strategyConfig.code || { enabled: true, budget: 'medium' })
   ].filter(s => s.enabled); // Only include enabled strategies
   
   strategies.forEach(s => strategiesByName[s.name] = s);

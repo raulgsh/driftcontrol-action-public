@@ -323,7 +323,8 @@ module.exports = {
   OperationCorrelationStrategy: correlation.OperationCorrelationStrategy,
   InfrastructureCorrelationStrategy: correlation.InfrastructureCorrelationStrategy,
   DependencyCorrelationStrategy: correlation.DependencyCorrelationStrategy,
-  TemporalCorrelationStrategy: correlation.TemporalCorrelationStrategy
+  TemporalCorrelationStrategy: correlation.TemporalCorrelationStrategy,
+  CodeAnalysisStrategy: correlation.CodeAnalysisStrategy
 };
 
 // Only run if called directly (not imported)

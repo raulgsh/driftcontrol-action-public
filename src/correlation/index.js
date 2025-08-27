@@ -18,6 +18,7 @@ const OperationCorrelationStrategy = require('./strategies/operation');
 const InfrastructureCorrelationStrategy = require('./strategies/infrastructure');
 const DependencyCorrelationStrategy = require('./strategies/dependency');
 const TemporalCorrelationStrategy = require('./strategies/temporal');
+const CodeAnalysisStrategy = require('./strategies/code');
 
 // Utility functions
 const { 
@@ -77,6 +78,7 @@ module.exports = {
   InfrastructureCorrelationStrategy,
   DependencyCorrelationStrategy,
   TemporalCorrelationStrategy,
+  CodeAnalysisStrategy,
   
   // Utility functions
   getArtifactId,
