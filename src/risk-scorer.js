@@ -11,10 +11,27 @@ const riskScorer = {
       'INTEGRITY_MISMATCH', 'TRANSITIVE_MAJOR_BUMP'
     ];
     
-    return highRiskIndicators.some(indicator => 
+    // Check for high-risk property-level patterns
+    const highRiskPropertyPatterns = [
+      /cidr.*0\.0\.0\.0\/0/i,        // CIDR opened to internet
+      /DeletionPolicy.*Delete/i,      // Changed to Delete
+      /publicly.*true/i,              // Made publicly accessible
+      /encryption.*false/i,           // Encryption disabled
+      /ssl.*false/i,                  // SSL disabled
+      /PROPERTY_REMOVED.*security/i,  // Security property removed
+      /PROPERTY_MODIFIED.*0\.0\.0\.0/i // Network opened to internet
+    ];
+    
+    const hasHighRiskIndicator = highRiskIndicators.some(indicator => 
       changeType.toUpperCase().includes(indicator) || 
       (details && details.some(d => d.toUpperCase().includes(indicator)))
     );
+    
+    const hasHighRiskProperty = details && details.some(d => 
+      highRiskPropertyPatterns.some(pattern => pattern.test(d))
+    );
+    
+    return hasHighRiskIndicator || hasHighRiskProperty;
   },
   
   // Medium severity: New required fields, non-nullable constraints, type narrowing, security changes
@@ -28,10 +45,27 @@ const riskScorer = {
       'TRANSITIVE_DEPENDENCIES_CHANGED', 'NEW_LOCK_FILE'
     ];
     
-    return mediumRiskIndicators.some(indicator => 
+    // Check for medium-risk property-level patterns
+    const mediumRiskPropertyPatterns = [
+      /PROPERTY_MODIFIED.*port/i,     // Port changes
+      /PROPERTY_MODIFIED.*timeout/i,  // Timeout changes
+      /PROPERTY_MODIFIED.*size/i,     // Resource size changes
+      /PROPERTY_ADDED.*rule/i,        // New rules added
+      /PROPERTY_REMOVED.*monitoring/i, // Monitoring removed
+      /ingress.*modified/i,           // Ingress rules modified
+      /egress.*modified/i             // Egress rules modified
+    ];
+    
+    const hasMediumRiskIndicator = mediumRiskIndicators.some(indicator => 
       changeType.toUpperCase().includes(indicator) || 
       (details && details.some(d => d.toUpperCase().includes(indicator)))
     );
+    
+    const hasMediumRiskProperty = details && details.some(d => 
+      mediumRiskPropertyPatterns.some(pattern => pattern.test(d))
+    );
+    
+    return hasMediumRiskIndicator || hasMediumRiskProperty;
   },
   
   // Transparent scoring: explains why a severity was assigned
