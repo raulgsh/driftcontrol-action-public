@@ -112,7 +112,7 @@ async function run() {
     // Analyze Infrastructure as Code drift
     if (terraformPlanPath || cloudformationGlob) {
       const iacResults = await iacAnalyzer.analyzeIaCFiles(
-        files, octokit, owner, repo, context.payload.pull_request.head.sha,
+        files, octokit, owner, repo, context.payload.pull_request,
         terraformPlanPath, cloudformationGlob, costThreshold
       );
       driftResults.push(...iacResults.driftResults);
