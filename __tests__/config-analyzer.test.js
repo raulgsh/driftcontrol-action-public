@@ -83,8 +83,13 @@ describe('Config Analyzer', () => {
         { filename: 'src/index.js', status: 'modified' }
       ];
       
+      const pullRequest = {
+        head: { sha: 'head-sha' },
+        base: { sha: 'base-sha' }
+      };
+      
       const result = await analyzer.analyzeConfigFiles(
-        files, mockOctokit, 'owner', 'repo', 'sha123', '', ''
+        files, mockOctokit, 'owner', 'repo', pullRequest, '', ''
       );
       
       expect(result.driftResults).toEqual([]);
@@ -116,8 +121,13 @@ describe('Config Analyzer', () => {
           data: { content: Buffer.from(JSON.stringify(baseFeatures)).toString('base64') }
         });
       
+      const pullRequest = {
+        head: { sha: 'head-sha' },
+        base: { sha: 'base-sha' }
+      };
+      
       const result = await analyzer.analyzeConfigFiles(
-        files, mockOctokit, 'owner', 'repo', 'sha123', '', 'config/features.json'
+        files, mockOctokit, 'owner', 'repo', pullRequest, '', 'config/features.json'
       );
       
       expect(result.driftResults.length).toBe(1);
@@ -158,8 +168,13 @@ describe('Config Analyzer', () => {
           data: { content: Buffer.from(JSON.stringify(basePackage)).toString('base64') }
         });
       
+      const pullRequest = {
+        head: { sha: 'head-sha' },
+        base: { sha: 'base-sha' }
+      };
+      
       const result = await analyzer.analyzeConfigFiles(
-        files, mockOctokit, 'owner', 'repo', 'sha123', '', ''
+        files, mockOctokit, 'owner', 'repo', pullRequest, '', ''
       );
       
       expect(result.driftResults.length).toBe(1);
@@ -218,8 +233,13 @@ volumes:
       
       mockOctokit.rest.repos.getContent.mockRejectedValue(new Error('API error'));
       
+      const pullRequest = {
+        head: { sha: 'head-sha' },
+        base: { sha: 'base-sha' }
+      };
+      
       const result = await analyzer.analyzeConfigFiles(
-        files, mockOctokit, 'owner', 'repo', 'sha123', '**/*.yml', ''
+        files, mockOctokit, 'owner', 'repo', pullRequest, '**/*.yml', ''
       );
       
       expect(result.driftResults).toEqual([]);
@@ -391,8 +411,13 @@ volumes:
           data: { content: Buffer.from(JSON.stringify(basePackage)).toString('base64') }
         });
       
+      const pullRequest = {
+        head: { sha: 'head-sha' },
+        base: { sha: 'base-sha' }
+      };
+      
       const result = await analyzer.analyzeConfigFiles(
-        files, mockOctokit, 'owner', 'repo', 'sha123', '', ''
+        files, mockOctokit, 'owner', 'repo', pullRequest, '', ''
       );
       
       expect(result.driftResults.length).toBe(1);
@@ -425,8 +450,13 @@ volumes:
           data: { content: Buffer.from(JSON.stringify(basePackage)).toString('base64') }
         });
       
+      const pullRequest = {
+        head: { sha: 'head-sha' },
+        base: { sha: 'base-sha' }
+      };
+      
       const result = await analyzer.analyzeConfigFiles(
-        files, mockOctokit, 'owner', 'repo', 'sha123', '', ''
+        files, mockOctokit, 'owner', 'repo', pullRequest, '', ''
       );
       
       expect(result.driftResults.length).toBe(1);
@@ -457,8 +487,13 @@ volumes:
           data: { content: Buffer.from(JSON.stringify(basePackage)).toString('base64') }
         });
       
+      const pullRequest = {
+        head: { sha: 'head-sha' },
+        base: { sha: 'base-sha' }
+      };
+      
       const result = await analyzer.analyzeConfigFiles(
-        files, mockOctokit, 'owner', 'repo', 'sha123', '', ''
+        files, mockOctokit, 'owner', 'repo', pullRequest, '', ''
       );
       
       expect(result.driftResults.length).toBe(1);
@@ -490,8 +525,13 @@ volumes:
           data: { content: Buffer.from(JSON.stringify(basePackage)).toString('base64') }
         });
       
+      const pullRequest = {
+        head: { sha: 'head-sha' },
+        base: { sha: 'base-sha' }
+      };
+      
       const result = await analyzer.analyzeConfigFiles(
-        files, mockOctokit, 'owner', 'repo', 'sha123', '', ''
+        files, mockOctokit, 'owner', 'repo', pullRequest, '', ''
       );
       
       expect(result.driftResults.length).toBe(1);

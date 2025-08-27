@@ -33,8 +33,13 @@ describe('IaC Analyzer', () => {
         { filename: 'src/index.js', status: 'modified' }
       ];
       
+      const pullRequest = {
+        head: { sha: 'head-sha' },
+        base: { sha: 'base-sha' }
+      };
+      
       const result = await analyzer.analyzeIaCFiles(
-        files, mockOctokit, 'owner', 'repo', 'sha123', '', '', '1000'
+        files, mockOctokit, 'owner', 'repo', pullRequest, '', '', '1000'
       );
       
       expect(result.driftResults).toEqual([]);
@@ -65,8 +70,13 @@ describe('IaC Analyzer', () => {
         }
       });
       
+      const pullRequest = {
+        head: { sha: 'head-sha' },
+        base: { sha: 'base-sha' }
+      };
+      
       const result = await analyzer.analyzeIaCFiles(
-        files, mockOctokit, 'owner', 'repo', 'sha123', 
+        files, mockOctokit, 'owner', 'repo', pullRequest, 
         'terraform.tfplan.json', '', '1000'
       );
       
@@ -98,8 +108,13 @@ describe('IaC Analyzer', () => {
         }
       });
       
+      const pullRequest = {
+        head: { sha: 'head-sha' },
+        base: { sha: 'base-sha' }
+      };
+      
       const result = await analyzer.analyzeIaCFiles(
-        files, mockOctokit, 'owner', 'repo', 'sha123',
+        files, mockOctokit, 'owner', 'repo', pullRequest,
         'terraform.tfplan.json', '', '1000'
       );
       
@@ -138,8 +153,13 @@ describe('IaC Analyzer', () => {
         }
       });
       
+      const pullRequest = {
+        head: { sha: 'head-sha' },
+        base: { sha: 'base-sha' }
+      };
+      
       const result = await analyzer.analyzeIaCFiles(
-        files, mockOctokit, 'owner', 'repo', 'sha123',
+        files, mockOctokit, 'owner', 'repo', pullRequest,
         'terraform.tfplan.json', '', '100'
       );
       
@@ -173,8 +193,13 @@ Resources:
         }
       });
       
+      const pullRequest = {
+        head: { sha: 'head-sha' },
+        base: { sha: 'base-sha' }
+      };
+      
       const result = await analyzer.analyzeIaCFiles(
-        files, mockOctokit, 'owner', 'repo', 'sha123',
+        files, mockOctokit, 'owner', 'repo', pullRequest,
         '', 'cloudformation/**/*.yml', '1000'
       );
       
@@ -192,8 +217,13 @@ Resources:
       
       mockOctokit.rest.repos.getContent.mockRejectedValue(new Error('API error'));
       
+      const pullRequest = {
+        head: { sha: 'head-sha' },
+        base: { sha: 'base-sha' }
+      };
+      
       const result = await analyzer.analyzeIaCFiles(
-        files, mockOctokit, 'owner', 'repo', 'sha123',
+        files, mockOctokit, 'owner', 'repo', pullRequest,
         'terraform.tfplan.json', '', '1000'
       );
       
@@ -219,8 +249,13 @@ Resources:
         }
       });
       
+      const pullRequest = {
+        head: { sha: 'head-sha' },
+        base: { sha: 'base-sha' }
+      };
+      
       const result = await analyzer.analyzeIaCFiles(
-        files, mockOctokit, 'owner', 'repo', 'sha123',
+        files, mockOctokit, 'owner', 'repo', pullRequest,
         'terraform.tfplan.json', '', '100'
       );
       

@@ -225,13 +225,13 @@ class SqlAnalyzer {
         core.info(`Found DROP TABLE: ${tableName}`);
       }
     } else if (keyword === 'column' && stmt.column) {
-      const columnName = stmt.column.column || stmt.column;
+      const columnName = this.extractColumnName(stmt.column);
       const tableName = this.extractTableName(stmt);
       if (tableName && columnName) {
         if (!droppedColumns.has(tableName)) droppedColumns.set(tableName, []);
         droppedColumns.get(tableName).push(columnName);
         sqlChanges.push(`DROP COLUMN: ${columnName}`);
-        core.info(`Found DROP COLUMN: ${columnName} from table ${tableNameStr}`);
+        core.info(`Found DROP COLUMN: ${columnName} from table ${tableName}`);
       }
     } else if (keyword === 'constraint' && stmt.name) {
       sqlChanges.push(`DROP CONSTRAINT: ${stmt.name}`);
@@ -262,20 +262,22 @@ class SqlAnalyzer {
         if (action === 'drop') {
           const resource = expr.resource?.toLowerCase();
           if (resource === 'column' && expr.column) {
-            const columnName = expr.column.column || expr.column;
-            if (tableName) {
-              if (!droppedColumns.has(tableName)) droppedColumns.set(tableName, []);
-              droppedColumns.get(tableName).push(columnName);
+            const columnName = this.extractColumnName(expr.column);
+            if (columnName) {
+              if (tableName) {
+                if (!droppedColumns.has(tableName)) droppedColumns.set(tableName, []);
+                droppedColumns.get(tableName).push(columnName);
+              }
+              sqlChanges.push(`DROP COLUMN: ${columnName}`);
             }
-            sqlChanges.push(`DROP COLUMN: ${columnName}`);
           } else if (resource === 'constraint' && expr.name) {
             sqlChanges.push(`DROP CONSTRAINT: ${expr.name}`);
           }
         } else if (action === 'add') {
           const resource = expr.resource?.toLowerCase();
           if (resource === 'column' && expr.column) {
-            const columnName = expr.column.column || expr.column.name || expr.column;
-            if (tableName) {
+            const columnName = this.extractColumnName(expr.column);
+            if (columnName && tableName) {
               if (!addedColumns.has(tableName)) addedColumns.set(tableName, []);
               addedColumns.get(tableName).push(columnName);
             }
@@ -330,6 +332,32 @@ class SqlAnalyzer {
     
     // Prevent returning objects
     core.debug(`extractTableName: Could not extract string from node: ${JSON.stringify(nameNode)}`);
+    return null;
+  }
+
+  // Extract column name from various statement types (similar defensive approach as extractTableName)
+  extractColumnName(column) {
+    if (!column) {
+      return null;
+    }
+    
+    // Handle different column structures from the AST
+    let columnName = null;
+    
+    // Try various property paths
+    if (typeof column === 'string') {
+      columnName = column;
+    } else if (typeof column === 'object') {
+      columnName = column.column || column.name || column.value;
+    }
+    
+    // Return only if it's a string
+    if (typeof columnName === 'string') {
+      return columnName;
+    }
+    
+    // Prevent returning objects
+    core.debug(`extractColumnName: Could not extract string from column: ${JSON.stringify(column)}`);
     return null;
   }
 
@@ -419,8 +447,8 @@ class SqlAnalyzer {
       }
     }
     
-    // Check for type-narrowing operations
-    const typeNarrowingPattern = /ALTER\s+COLUMN\s+([\w`"\[\]]+)\s+TYPE\s+(\w+)/gi;
+    // Check for type-narrowing operations (PostgreSQL syntax)
+    const typeNarrowingPattern = /ALTER\s+(?:TABLE\s+[\w`"\[\]]+\s+ALTER\s+)?COLUMN\s+([\w`"\[\]]+)\s+TYPE\s+(\w+)/gi;
     while ((match = typeNarrowingPattern.exec(content)) !== null) {
       const columnName = match[1].replace(/[`"\[\]]/g, '');
       sqlChanges.push(`TYPE NARROWING: ${columnName} -> ${match[2]}`);
