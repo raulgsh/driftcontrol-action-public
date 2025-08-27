@@ -12,16 +12,43 @@ class ConfigAnalyzer {
 
   // Load user-defined correlation configuration from .github/driftcontrol.yml
   async loadCorrelationConfig(octokit, owner, repo, pullRequest, correlationConfigPath) {
+    // Try multiple refs in order: PR head, PR base, default branch
+    const tryRefs = [pullRequest.head.sha, pullRequest.base.sha, undefined];
+    let configData = null;
+    let loadedRef = null;
+    
+    for (const ref of tryRefs) {
+      try {
+        const params = { owner, repo, path: correlationConfigPath };
+        if (ref) params.ref = ref;
+        
+        core.info(`Trying to load correlation config from: ${correlationConfigPath} at ${ref || 'default branch'}`);
+        const { data } = await octokit.rest.repos.getContent(params);
+        configData = data;
+        loadedRef = ref || 'default';
+        break;
+      } catch (error) {
+        if (error.status === 404) {
+          continue; // Try next ref
+        }
+        throw error; // Propagate other errors
+      }
+    }
+    
+    if (!configData) {
+      core.info(`No correlation config found at ${correlationConfigPath} in any branch - using heuristic correlation only`);
+      return {
+        correlationRules: [],
+        strategyConfig: {},
+        thresholds: {},
+        limits: {},
+        configPath: correlationConfigPath,
+        loaded: false
+      };
+    }
+    
     try {
-      core.info(`Loading correlation config from: ${correlationConfigPath} at ${pullRequest.head.sha}`);
-      
-      // Try to fetch the correlation config file from the PR branch
-      const { data: configData } = await octokit.rest.repos.getContent({
-        owner,
-        repo,
-        path: correlationConfigPath,
-        ref: pullRequest.head.sha // Use PR head to get config from the PR branch
-      });
+      core.info(`Successfully loaded config from ${loadedRef === 'default' ? 'default branch' : `ref ${loadedRef}`}`);
       
       // Handle large files - if content is missing, try download_url
       let configContent;
@@ -122,10 +149,16 @@ class ConfigAnalyzer {
       // Parse thresholds with clamping
       let thresholds = {};
       if (config.thresholds) {
-        thresholds = {
-          correlate_min: Math.max(0, Math.min(1, config.thresholds.correlate_min || 0.55)),
-          block_min: Math.max(0, Math.min(1, config.thresholds.block_min || 0.80))
-        };
+        const correlateMin = Math.max(0, Math.min(1, config.thresholds.correlate_min || 0.55));
+        const blockMin = Math.max(0, Math.min(1, config.thresholds.block_min || 0.80));
+        
+        // Sanity check: correlate_min should be <= block_min
+        if (correlateMin > blockMin) {
+          core.warning(`Invalid thresholds: correlate_min (${correlateMin}) > block_min (${blockMin}). Using defaults.`);
+          thresholds = { correlate_min: 0.55, block_min: 0.80 };
+        } else {
+          thresholds = { correlate_min: correlateMin, block_min: blockMin };
+        }
         core.info(`Loaded thresholds: ${JSON.stringify(thresholds)}`);
       }
       

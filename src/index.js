@@ -555,12 +555,15 @@ function aggregateCorrelations(userCorrelations, strategySignals, strategiesByNa
           typeof e === 'string' ? { reason: e } : e
         );
         
-        // De-duplicate evidence
-        const existingReasons = new Set(correlation.evidence.map(e => e.reason || ''));
+        // De-duplicate evidence by reason and file/line
+        const existingEvidence = new Set(
+          correlation.evidence.map(e => JSON.stringify({ reason: e.reason, file: e.file, line: e.line }))
+        );
         structuredEvidence.forEach(e => {
-          if (!existingReasons.has(e.reason || '')) {
+          const key = JSON.stringify({ reason: e.reason, file: e.file, line: e.line });
+          if (!existingEvidence.has(key)) {
             correlation.evidence.push(e);
-            existingReasons.add(e.reason || '');
+            existingEvidence.add(key);
           }
         });
         
@@ -593,9 +596,11 @@ function aggregateCorrelations(userCorrelations, strategySignals, strategiesByNa
     corr.confidence = corr.finalScore;
     
     // Build explanation
-    const scoreBreakdown = corr.strategies.map(s => 
-      `${s}:${corr.scores[s].toFixed(2)}×${corr.weights[s].toFixed(1)}`
-    ).join(', ');
+    const scoreBreakdown = corr.strategies.map(s => {
+      const raw = corr.scores[s];
+      const w = corr.weights[s] ?? 1;
+      return `${s}:${raw.toFixed(2)}×${w.toFixed(1)}`;
+    }).join(', ');
     
     corr.explanation = `${getArtifactId(corr.source)} → ${getArtifactId(corr.target)} = ${corr.finalScore.toFixed(2)} [${scoreBreakdown}]`;
   });
@@ -875,12 +880,15 @@ class TemporalCorrelationStrategy extends CorrelationStrategy {
   async run({ driftResults, files, config, processedPairs, candidatePairs }) {
     const correlations = [];
     
+    // Safe directory extraction
+    const getDir = (p) => (p && p.includes('/')) ? p.slice(0, p.lastIndexOf('/')) : '';
+    
     // Find drift results in the same directory
     for (let i = 0; i < driftResults.length; i++) {
       const result1 = driftResults[i];
       if (!result1.file) continue;
       
-      const dir1 = result1.file.substring(0, result1.file.lastIndexOf('/'));
+      const dir1 = getDir(result1.file);
       
       for (let j = i + 1; j < driftResults.length; j++) {
         const result2 = driftResults[j];
@@ -891,7 +899,7 @@ class TemporalCorrelationStrategy extends CorrelationStrategy {
         if (processedPairs.has(pairKey)) continue;
         if (this.budget !== 'low' && candidatePairs && !candidatePairs.has(pairKey)) continue;
         
-        const dir2 = result2.file.substring(0, result2.file.lastIndexOf('/'));
+        const dir2 = getDir(result2.file);
         
         if (dir1 === dir2) {
           correlations.push({
@@ -992,408 +1000,7 @@ async function correlateAcrossLayers(driftResults, files, correlationConfig = nu
   );
 }
 
-// Old implementation kept for reference, will be removed after testing
-function correlateAcrossLayersOLD(driftResults, files, correlationConfig = null) {
-  const correlations = [];
-  const processedPairs = new Set(); // Track processed pairs to avoid duplicates
-  
-  // Build comprehensive metadata for each result
-  driftResults.forEach(result => {
-    if (!result.metadata) {
-      result.metadata = extractMetadata(result, files);
-    }
-    // Assign stable artifact ID
-    result.artifactId = getArtifactId(result);
-  });
-  
-  // 0. Apply user-defined correlation rules FIRST (highest priority)
-  if (correlationConfig && correlationConfig.correlationRules && correlationConfig.correlationRules.length > 0) {
-    core.info(`Applying ${correlationConfig.correlationRules.length} user-defined correlation rules`);
-    
-    for (const rule of correlationConfig.correlationRules) {
-      // Handle ignore rules
-      if (rule.type === 'ignore') {
-        // Mark this pair as processed to skip in heuristic correlation
-        // Store multiple formats to ensure matches
-        processedPairs.add(`${rule.source}::${rule.target}`);
-        processedPairs.add(`${rule.target}::${rule.source}`); // Bidirectional
-        
-        // Also add variations based on common patterns
-        if (rule.source.includes('/')) {
-          const sourceBasename = rule.source.split('/').pop();
-          processedPairs.add(`${sourceBasename}::${rule.target}`);
-        }
-        if (rule.target.includes('/')) {
-          const targetBasename = rule.target.split('/').pop();
-          processedPairs.add(`${rule.source}::${targetBasename}`);
-        }
-        
-        core.info(`Ignoring correlation between ${rule.source} and ${rule.target}: ${rule.reason}`);
-        continue;
-      }
-      
-      // Find matching drift results for the rule
-      const sourceResults = driftResults.filter(r => {
-        // Exact match first
-        if (r.artifactId === rule.source) return true;
-        if (r.file === rule.source) return true;
-        
-        // Match by file path (contains check for path matching)
-        if (r.file && rule.source.includes('/') && r.file.includes(rule.source)) return true;
-        
-        // Match API endpoints (with method support)
-        if (rule.apiRoute && r.endpoints) {
-          return r.endpoints.some(e => {
-            if (rule.apiMethod && rule.apiMethod !== 'ANY') {
-              // Method-aware matching
-              return e === rule.apiRoute || e === `${rule.apiMethod}:${rule.apiRoute}`;
-            }
-            return e === rule.apiRoute || e === rule.source;
-          });
-        }
-        
-        // Match by resource ID for IaC
-        if (r.resources && r.resources.some(res => res === rule.source)) return true;
-        
-        // Match by entity name
-        if (r.entities && r.entities.some(e => e === rule.source)) return true;
-        
-        return false;
-      });
-      
-      const targetResults = driftResults.filter(r => {
-        // Exact match first
-        if (r.artifactId === rule.target) return true;
-        if (r.file === rule.target) return true;
-        
-        // Match by file path
-        if (r.file && rule.target.includes('/') && r.file.includes(rule.target)) return true;
-        
-        // Match database tables
-        if (r.entities && r.entities.some(e => e === rule.target)) return true;
-        
-        // Check SQL changes for table mentions
-        if (r.type === 'database' && r.changes) {
-          return r.changes.some(c => {
-            const changeLower = c.toLowerCase();
-            const targetLower = rule.target.toLowerCase();
-            // Look for table name in SQL statements
-            return changeLower.includes(`table ${targetLower}`) ||
-                   changeLower.includes(`from ${targetLower}`) ||
-                   changeLower.includes(`join ${targetLower}`) ||
-                   changeLower.includes(`${targetLower} `);
-          });
-        }
-        
-        return false;
-      });
-      
-      // Create correlations for all matching pairs
-      sourceResults.forEach(source => {
-        targetResults.forEach(target => {
-          if (source !== target) {
-            const pairKey = `${source.artifactId}::${target.artifactId}`;
-            const reversePairKey = `${target.artifactId}::${source.artifactId}`;
-            processedPairs.add(pairKey); // Mark as processed
-            processedPairs.add(reversePairKey); // Mark reverse as processed too
-            
-            correlations.push({
-              source: source,
-              target: target,
-              relationship: rule.type,
-              confidence: 1.0, // User-defined rules have maximum confidence
-              userDefined: true,
-              details: rule.description || `User-defined ${rule.type} correlation`,
-              rule: rule // Keep original rule for reference
-            });
-            
-            core.info(`Applied user-defined correlation: ${rule.type} between ${source.artifactId} and ${target.artifactId}`);
-          }
-        });
-      });
-    }
-  }
-  
-  // Multi-layer correlation strategies (existing heuristic logic)
-  
-  // 1. Entity-based correlation
-  const apiChanges = driftResults.filter(r => r.type === 'api');
-  const dbChanges = driftResults.filter(r => r.type === 'database');
-  
-  apiChanges.forEach(api => {
-    dbChanges.forEach(db => {
-      // Skip if this pair was already processed by user-defined rules
-      const pairKey = `${api.artifactId}::${db.artifactId}`;
-      const reversePairKey = `${db.artifactId}::${api.artifactId}`;
-      if (processedPairs.has(pairKey) || processedPairs.has(reversePairKey)) {
-        return; // Skip this pair
-      }
-      
-      // Use new sophisticated detectRelation
-      if (detectRelation(api, db)) {
-        // Extract detailed correlation info
-        const apiEntities = api.metadata.entities || [];
-        const dbEntities = db.metadata.entities || [];
-        
-        // Find the best matching entities
-        let bestMatch = { confidence: 0 };
-        apiEntities.forEach(apiEntity => {
-          dbEntities.forEach(dbEntity => {
-            const apiVars = generateEntityVariations(apiEntity);
-            const dbVars = generateEntityVariations(dbEntity);
-            const match = findBestMatch(apiVars, dbVars);
-            if (match.confidence > bestMatch.confidence) {
-              bestMatch = { ...match, apiEntity, dbEntity };
-            }
-          });
-        });
-        
-        if (bestMatch.confidence > 0.6) {
-          correlations.push({
-            source: api,
-            target: db,
-            relationship: 'api_uses_table',
-            confidence: bestMatch.confidence,
-            details: `API entity '${bestMatch.apiEntity}' correlates with table '${bestMatch.dbEntity}'`
-          });
-        }
-      }
-    });
-  });
-  
-  // 2. Operation-based correlation (CRUD alignment)
-  apiChanges.forEach(api => {
-    dbChanges.forEach(db => {
-      const apiOps = api.metadata.operations || [];
-      const dbOps = db.metadata.operations || [];
-      
-      if (apiOps.length > 0 && dbOps.length > 0) {
-        const matchingOps = apiOps.filter(op => dbOps.includes(op));
-        if (matchingOps.length > 0) {
-          const confidence = Math.min(0.9, 0.6 + (matchingOps.length * 0.1));
-          correlations.push({
-            source: api,
-            target: db,
-            relationship: 'operation_alignment',
-            confidence: confidence,
-            details: `Aligned operations: ${matchingOps.join(', ')}`
-          });
-        }
-      }
-    });
-  });
-  
-  // 3. Infrastructure to application correlation
-  const iacChanges = driftResults.filter(r => r.type === 'infrastructure');
-  const configChanges = driftResults.filter(r => r.type === 'configuration');
-  
-  iacChanges.forEach(iac => {
-    // Infrastructure to configuration correlation
-    configChanges.forEach(config => {
-      // Skip if this pair was already processed by user-defined rules
-      const pairKey = `${iac.artifactId}::${config.artifactId}`;
-      const reversePairKey = `${config.artifactId}::${iac.artifactId}`;
-      if (processedPairs.has(pairKey) || processedPairs.has(reversePairKey)) {
-        return; // Skip this pair
-      }
-      
-      // Check for environment variable relationships
-      if ((iac.file && iac.file.includes('terraform')) && 
-          (config.file && (config.file.includes('env') || config.file.includes('config')))) {
-        correlations.push({
-          source: iac,
-          target: config,
-          relationship: 'infra_affects_config',
-          confidence: 0.7,
-          details: 'Infrastructure change may affect application configuration'
-        });
-      }
-      
-      // Check for resource dependencies with improved matching
-      if (iac.resources && config.dependencies) {
-        const sharedResources = [];
-        iac.resources.forEach(resource => {
-          config.dependencies.forEach(dep => {
-            const resourceVars = generateEntityVariations(resource);
-            const depVars = generateEntityVariations(dep);
-            const match = findBestMatch(resourceVars, depVars);
-            if (match.confidence > 0.7) {
-              sharedResources.push({ resource, dep, confidence: match.confidence });
-            }
-          });
-        });
-        
-        if (sharedResources.length > 0) {
-          const avgConfidence = sharedResources.reduce((sum, r) => sum + r.confidence, 0) / sharedResources.length;
-          correlations.push({
-            source: iac,
-            target: config,
-            relationship: 'resource_dependency',
-            confidence: avgConfidence,
-            details: `Shared resources: ${sharedResources.map(r => r.resource).join(', ')}`
-          });
-        }
-      }
-    });
-    
-    // Infrastructure to API correlation
-    apiChanges.forEach(api => {
-      // Skip if this pair was already processed by user-defined rules
-      const pairKey = `${iac.artifactId}::${api.artifactId}`;
-      const reversePairKey = `${api.artifactId}::${iac.artifactId}`;
-      if (processedPairs.has(pairKey) || processedPairs.has(reversePairKey)) {
-        return; // Skip this pair
-      }
-      
-      if (iac.resources && api.file) {
-        // Check if infrastructure change affects API deployment
-        const apiRelatedTerms = ['api', 'gateway', 'function', 'lambda', 'endpoint', 'service'];
-        const isApiInfra = iac.resources.some(r => {
-          const rLower = r.toLowerCase();
-          return apiRelatedTerms.some(term => rLower.includes(term));
-        });
-        
-        if (isApiInfra) {
-          correlations.push({
-            source: iac,
-            target: api,
-            relationship: 'infra_hosts_api',
-            confidence: 0.75,
-            details: 'Infrastructure changes affect API deployment'
-          });
-        }
-      }
-    });
-  });
-  
-  // 4. Dependency correlation
-  const packageChanges = driftResults.filter(r => 
-    r.type === 'configuration' && r.file && r.file.includes('package')
-  );
-  
-  packageChanges.forEach(pkg => {
-    const pkgDeps = pkg.metadata.dependencies || [];
-    
-    // Link package changes to API
-    apiChanges.forEach(api => {
-      // Skip if this pair was already processed by user-defined rules
-      const pairKey = `${pkg.artifactId}::${api.artifactId}`;
-      const reversePairKey = `${api.artifactId}::${pkg.artifactId}`;
-      if (processedPairs.has(pairKey) || processedPairs.has(reversePairKey)) {
-        return; // Skip this pair
-      }
-      
-      if (pkgDeps.length > 0) {
-        // Check if any dependency is API-related
-        const apiDeps = pkgDeps.filter(dep => {
-          const depLower = dep.toLowerCase();
-          return depLower.includes('express') || depLower.includes('fastify') || 
-                 depLower.includes('koa') || depLower.includes('hapi') ||
-                 depLower.includes('swagger') || depLower.includes('openapi');
-        });
-        
-        if (apiDeps.length > 0) {
-          correlations.push({
-            source: pkg,
-            target: api,
-            relationship: 'dependency_affects_api',
-            confidence: 0.8,
-            details: `API-related dependencies changed: ${apiDeps.join(', ')}`
-          });
-        }
-      }
-    });
-    
-    // Link package changes to database
-    dbChanges.forEach(db => {
-      // Skip if this pair was already processed by user-defined rules
-      const pairKey = `${pkg.artifactId}::${db.artifactId}`;
-      const reversePairKey = `${db.artifactId}::${pkg.artifactId}`;
-      if (processedPairs.has(pairKey) || processedPairs.has(reversePairKey)) {
-        return; // Skip this pair
-      }
-      
-      if (pkgDeps.length > 0) {
-        // Check if any dependency is DB-related
-        const dbDeps = pkgDeps.filter(dep => {
-          const depLower = dep.toLowerCase();
-          return depLower.includes('sequelize') || depLower.includes('typeorm') ||
-                 depLower.includes('prisma') || depLower.includes('knex') ||
-                 depLower.includes('mongoose') || depLower.includes('pg') ||
-                 depLower.includes('mysql') || depLower.includes('sqlite');
-        });
-        
-        if (dbDeps.length > 0) {
-          correlations.push({
-            source: pkg,
-            target: db,
-            relationship: 'dependency_affects_db',
-            confidence: 0.8,
-            details: `Database-related dependencies changed: ${dbDeps.join(', ')}`
-          });
-        }
-      }
-    });
-  });
-  
-  // 5. Temporal correlation (files changed together)
-  const fileGroups = new Map();
-  files.forEach(file => {
-    const dir = file.filename.substring(0, file.filename.lastIndexOf('/'));
-    if (!fileGroups.has(dir)) fileGroups.set(dir, []);
-    fileGroups.get(dir).push(file);
-  });
-  
-  // Find drift results in the same directory
-  driftResults.forEach((result1, i) => {
-    driftResults.slice(i + 1).forEach(result2 => {
-      if (result1.file && result2.file) {
-        // Check if this pair should be ignored
-        const pairKey = `${result1.artifactId}::${result2.artifactId}`;
-        const reversePairKey = `${result2.artifactId}::${result1.artifactId}`;
-        
-        // Also check file-based keys for backward compatibility with ignore rules
-        const filePairKey1 = `${result1.file}::${result2.file}`;
-        const filePairKey2 = `${result2.file}::${result1.file}`;
-        const fileBasename1 = result1.file.split('/').pop();
-        const fileBasename2 = result2.file.split('/').pop();
-        const basenamePairKey1 = `${fileBasename1}::${fileBasename2}`;
-        const basenamePairKey2 = `${fileBasename2}::${fileBasename1}`;
-        
-        if (processedPairs.has(pairKey) || processedPairs.has(reversePairKey) ||
-            processedPairs.has(filePairKey1) || processedPairs.has(filePairKey2) || 
-            processedPairs.has(basenamePairKey1) || processedPairs.has(basenamePairKey2)) {
-          return; // Skip this pair
-        }
-        
-        const dir1 = result1.file.substring(0, result1.file.lastIndexOf('/'));
-        const dir2 = result2.file.substring(0, result2.file.lastIndexOf('/'));
-        
-        if (dir1 === dir2) {
-          correlations.push({
-            source: result1,
-            target: result2,
-            relationship: 'temporal_correlation',
-            confidence: 0.65,
-            details: 'Files changed in the same directory'
-          });
-        }
-      }
-    });
-  });
-  
-  // Deduplicate correlations (keep highest confidence for each pair)
-  const correlationMap = new Map();
-  correlations.forEach(corr => {
-    const key = `${corr.source.file || 'unknown'}->${corr.target.file || 'unknown'}`;
-    const existing = correlationMap.get(key);
-    if (!existing || existing.confidence < corr.confidence) {
-      correlationMap.set(key, corr);
-    }
-  });
-  
-  return Array.from(correlationMap.values());
-}
+// Legacy correlation function has been removed - replaced with strategy-based system
 
 function detectRelation(apiResult, dbResult) {
   const correlations = [];
@@ -1852,7 +1459,23 @@ module.exports = {
   detectApiOperations,
   detectDbOperations,
   operationsCorrelate,
-  getArtifactId
+  getArtifactId,
+  // New correlation engine exports
+  getPairKey,
+  expandResults,
+  isCriticalPair,
+  resolveTokenToArtifacts,
+  matchToken,
+  applyUserDefinedRules,
+  selectCandidatePairs,
+  aggregateCorrelations,
+  // Strategy classes
+  CorrelationStrategy,
+  EntityCorrelationStrategy,
+  OperationCorrelationStrategy,
+  InfrastructureCorrelationStrategy,
+  DependencyCorrelationStrategy,
+  TemporalCorrelationStrategy
 };
 
 // Only run if called directly (not imported)
