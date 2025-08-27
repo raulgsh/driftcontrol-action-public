@@ -9,7 +9,9 @@ class ConfigAnalyzer {
     this.sensitivePatterns = /password|secret|token|key|credential|auth|api_key|private|pwd/i;
   }
 
-  async analyzeConfigFiles(files, octokit, owner, repo, pullRequestHeadSha, configYamlGlob, featureFlagsPath) {
+  async analyzeConfigFiles(files, octokit, owner, repo, pullRequest, configYamlGlob, featureFlagsPath) {
+    const pullRequestHeadSha = pullRequest.head.sha;
+    const pullRequestBaseSha = pullRequest.base.sha;
     const driftResults = [];
     let hasHighSeverity = false;
     let hasMediumSeverity = false;
@@ -18,7 +20,7 @@ class ConfigAnalyzer {
       // Analyze general config YAML files
       if (configYamlGlob) {
         const yamlResults = await this.analyzeYamlConfigs(
-          files, octokit, owner, repo, pullRequestHeadSha, configYamlGlob
+          files, octokit, owner, repo, pullRequestHeadSha, pullRequestBaseSha, configYamlGlob
         );
         for (const result of yamlResults) {
           driftResults.push(result);
@@ -30,7 +32,7 @@ class ConfigAnalyzer {
       // Analyze feature flags file
       if (featureFlagsPath && files.some(f => f.filename === featureFlagsPath)) {
         const flagResult = await this.analyzeFeatureFlags(
-          octokit, owner, repo, pullRequestHeadSha, featureFlagsPath
+          octokit, owner, repo, pullRequestHeadSha, pullRequestBaseSha, featureFlagsPath
         );
         if (flagResult) {
           driftResults.push(flagResult);
@@ -43,7 +45,7 @@ class ConfigAnalyzer {
       const packageJsonFiles = files.filter(f => f.filename.endsWith('package.json'));
       for (const file of packageJsonFiles) {
         const packageResult = await this.analyzePackageJson(
-          octokit, owner, repo, pullRequestHeadSha, file.filename
+          octokit, owner, repo, pullRequestHeadSha, pullRequestBaseSha, file.filename
         );
         if (packageResult) {
           driftResults.push(packageResult);
@@ -58,7 +60,7 @@ class ConfigAnalyzer {
       );
       for (const file of dockerComposeFiles) {
         const dockerResult = await this.analyzeDockerCompose(
-          octokit, owner, repo, pullRequestHeadSha, file.filename
+          octokit, owner, repo, pullRequestHeadSha, pullRequestBaseSha, file.filename
         );
         if (dockerResult) {
           driftResults.push(dockerResult);
@@ -132,7 +134,7 @@ class ConfigAnalyzer {
     return changes;
   }
 
-  async analyzeYamlConfigs(files, octokit, owner, repo, pullRequestHeadSha, configYamlGlob) {
+  async analyzeYamlConfigs(files, octokit, owner, repo, pullRequestHeadSha, pullRequestBaseSha, configYamlGlob) {
     const results = [];
     
     // Convert glob to regex (reuse pattern from sql-analyzer)
@@ -178,7 +180,7 @@ class ConfigAnalyzer {
             owner,
             repo,
             path: file.filename,
-            ref: 'HEAD~1'  // Previous commit
+            ref: pullRequestBaseSha  // Base branch commit
           });
           
           const baseContent = Buffer.from(baseData.content, 'base64').toString();
@@ -211,7 +213,7 @@ class ConfigAnalyzer {
     return results;
   }
 
-  async analyzeFeatureFlags(octokit, owner, repo, pullRequestHeadSha, featureFlagsPath) {
+  async analyzeFeatureFlags(octokit, owner, repo, pullRequestHeadSha, pullRequestBaseSha, featureFlagsPath) {
     try {
       core.info(`Analyzing feature flags at: ${featureFlagsPath}`);
       
@@ -237,7 +239,7 @@ class ConfigAnalyzer {
           owner,
           repo,
           path: featureFlagsPath,
-          ref: 'HEAD~1'
+          ref: pullRequestBaseSha
         });
         
         const baseContent = Buffer.from(baseData.content, 'base64').toString();
@@ -276,7 +278,7 @@ class ConfigAnalyzer {
     return null;
   }
 
-  async analyzePackageJson(octokit, owner, repo, pullRequestHeadSha, packagePath) {
+  async analyzePackageJson(octokit, owner, repo, pullRequestHeadSha, pullRequestBaseSha, packagePath) {
     try {
       core.info(`Analyzing package.json: ${packagePath}`);
       
@@ -298,7 +300,7 @@ class ConfigAnalyzer {
           owner,
           repo,
           path: packagePath,
-          ref: 'HEAD~1'
+          ref: pullRequestBaseSha
         });
         
         const baseContent = Buffer.from(baseData.content, 'base64').toString();
@@ -406,7 +408,7 @@ class ConfigAnalyzer {
   }
   
   // Analyze package-lock.json for transitive dependency changes
-  async analyzePackageLock(octokit, owner, repo, pullRequestHeadSha, lockPath) {
+  async analyzePackageLock(octokit, owner, repo, pullRequestHeadSha, pullRequestBaseSha, lockPath) {
     try {
       core.info(`Analyzing package-lock.json: ${lockPath}`);
       
@@ -428,7 +430,7 @@ class ConfigAnalyzer {
           owner,
           repo,
           path: lockPath,
-          ref: 'HEAD~1'
+          ref: pullRequestBaseSha
         });
         
         const baseContent = Buffer.from(baseData.content, 'base64').toString();
@@ -507,7 +509,7 @@ class ConfigAnalyzer {
     return null;
   }
   
-  async analyzeDockerCompose(octokit, owner, repo, pullRequestHeadSha, composePath) {
+  async analyzeDockerCompose(octokit, owner, repo, pullRequestHeadSha, pullRequestBaseSha, composePath) {
     try {
       core.info(`Analyzing docker-compose: ${composePath}`);
       
@@ -536,7 +538,7 @@ class ConfigAnalyzer {
           owner,
           repo,
           path: composePath,
-          ref: 'HEAD~1'
+          ref: pullRequestBaseSha
         });
         
         const baseContent = Buffer.from(baseData.content, 'base64').toString();

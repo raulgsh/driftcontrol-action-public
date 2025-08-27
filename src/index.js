@@ -123,7 +123,7 @@ async function run() {
     // Analyze Configuration drift (security-first: keys only)
     if (configYamlGlob || featureFlagsPath || files.some(f => f.filename.endsWith('package.json') || f.filename.endsWith('package-lock.json') || f.filename.includes('docker-compose'))) {
       const configResults = await configAnalyzer.analyzeConfigFiles(
-        files, octokit, owner, repo, context.payload.pull_request.head.sha,
+        files, octokit, owner, repo, context.payload.pull_request,
         configYamlGlob, featureFlagsPath
       );
       driftResults.push(...configResults.driftResults);
@@ -134,7 +134,7 @@ async function run() {
       const packageLockFiles = files.filter(f => f.filename.endsWith('package-lock.json'));
       for (const file of packageLockFiles) {
         const lockResult = await configAnalyzer.analyzePackageLock(
-          octokit, owner, repo, context.payload.pull_request.head.sha, file.filename
+          octokit, owner, repo, context.payload.pull_request.head.sha, context.payload.pull_request.base.sha, file.filename
         );
         if (lockResult) {
           driftResults.push(lockResult);
