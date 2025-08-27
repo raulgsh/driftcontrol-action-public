@@ -5,7 +5,9 @@ const {
   isCriticalPair,
   resolveTokenToArtifacts,
   matchToken,
-  aggregateCorrelations
+  aggregateCorrelations,
+  clamp01,
+  hasFileLine
 } = require('../src/index');
 
 describe('Correlation Strategy Engine', () => {
@@ -251,6 +253,104 @@ describe('Correlation Strategy Engine', () => {
       // Evidence from higher confidence signal
       expect(correlation.evidence[0].reason).toBe('High confidence match');
       expect(correlation.evidence).toHaveLength(1);
+    });
+
+    test('handles invalid confidence values robustly', () => {
+      const source = { type: 'api', id: 'api1' };
+      const target = { type: 'database', id: 'db1' };
+      
+      const strategySignals = new Map([
+        ['entity', [
+          { source, target, confidence: NaN, relationship: 'uses', evidence: ['Invalid'] },
+          { source, target, confidence: 1.5, relationship: 'uses', evidence: ['Too high'] },
+          { source, target, confidence: -0.5, relationship: 'uses', evidence: ['Negative'] },
+          { source, target, confidence: 0.7, relationship: 'uses', evidence: ['Valid'] }
+        ]]
+      ]);
+      
+      const strategiesByName = { entity: { enabled: true, weight: 1.0 } };
+      const processedPairs = new Set();
+      const config = {};
+      
+      const results = aggregateCorrelations([], strategySignals, strategiesByName, processedPairs, config);
+      
+      expect(results).toHaveLength(1);
+      expect(results[0].scores.entity).toBe(1); // 1.5 gets clamped to 1, which is highest
+      expect(results[0].evidence[0].reason).toBe('Too high');
+    });
+
+    test('handles tie-breaking with richer evidence', () => {
+      const source = { type: 'api', id: 'api1' };
+      const target = { type: 'database', id: 'db1' };
+      
+      const strategySignals = new Map([
+        ['entity', [
+          { 
+            source, target, confidence: 0.8, relationship: 'uses', 
+            evidence: ['Simple match'] 
+          },
+          { 
+            source, target, confidence: 0.8, relationship: 'uses', 
+            evidence: [{ reason: 'Rich match', file: 'test.js', line: 42 }] 
+          }
+        ]]
+      ]);
+      
+      const strategiesByName = { entity: { enabled: true, weight: 1.0 } };
+      const processedPairs = new Set();
+      const config = {};
+      
+      const results = aggregateCorrelations([], strategySignals, strategiesByName, processedPairs, config);
+      
+      expect(results).toHaveLength(1);
+      expect(results[0].evidence[0].reason).toBe('Rich match');
+      expect(results[0].evidence[0].file).toBe('test.js');
+    });
+
+    test('guards against undefined relationships', () => {
+      const source = { type: 'api', id: 'api1' };
+      const target = { type: 'database', id: 'db1' };
+      
+      const strategySignals = new Map([
+        ['entity', [
+          { source, target, confidence: 0.8, evidence: ['Test'] }
+          // No relationship property
+        ]]
+      ]);
+      
+      const strategiesByName = { entity: { enabled: true, weight: 1.0 } };
+      const processedPairs = new Set();
+      const config = {};
+      
+      const results = aggregateCorrelations([], strategySignals, strategiesByName, processedPairs, config);
+      
+      expect(results).toHaveLength(1);
+      expect(results[0].relationship).toBe(''); // Empty string, not undefined
+    });
+  });
+
+  describe('Helper Functions', () => {
+    describe('clamp01', () => {
+      test('clamps values to [0,1] range', () => {
+        expect(clamp01(0.5)).toBe(0.5);
+        expect(clamp01(-0.5)).toBe(0);
+        expect(clamp01(1.5)).toBe(1);
+        expect(clamp01(NaN)).toBe(0);
+        expect(clamp01(Infinity)).toBe(0);
+        expect(clamp01(-Infinity)).toBe(0);
+        expect(clamp01('0.5')).toBe(0); // Non-number
+      });
+    });
+
+    describe('hasFileLine', () => {
+      test('detects file/line metadata in evidence', () => {
+        expect(hasFileLine([{ reason: 'test', file: 'a.js' }])).toBe(true);
+        expect(hasFileLine([{ reason: 'test', line: 42 }])).toBe(true);
+        expect(hasFileLine([{ reason: 'test' }])).toBe(false);
+        expect(hasFileLine(['string evidence'])).toBe(false);
+        expect(hasFileLine([])).toBe(false);
+        expect(hasFileLine(null)).toBe(false);
+      });
     });
   });
 });

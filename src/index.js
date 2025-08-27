@@ -516,6 +516,19 @@ function dedupeEvidence(evidenceArray) {
   return result;
 }
 
+// Clamp confidence values to [0,1] and handle invalid inputs
+function clamp01(x) {
+  if (!Number.isFinite(x)) return 0;
+  return Math.max(0, Math.min(1, x));
+}
+
+// Check if evidence has file/line metadata for tie-breaking
+function hasFileLine(evidence) {
+  return (evidence || []).some(e => 
+    e && typeof e !== 'string' && (e.file || e.line)
+  );
+}
+
 // Aggregate correlations with correct weighted scoring
 function aggregateCorrelations(userCorrelations, strategySignals, strategiesByName, processedPairs, config) {
   const correlationMap = new Map();
@@ -568,19 +581,31 @@ function aggregateCorrelations(userCorrelations, strategySignals, strategiesByNa
       
       // Take max confidence if strategy emits multiple signals for same pair
       const prevScore = correlation.scores[strategyName] ?? -1;
-      if (signal.confidence > prevScore) {
-        correlation.scores[strategyName] = signal.confidence;
+      const nextScore = clamp01(signal.confidence);
+      
+      // Replace on higher confidence, or equal confidence with richer evidence
+      if (nextScore > prevScore || 
+          (nextScore === prevScore && hasFileLine(signal.evidence))) {
+        correlation.scores[strategyName] = nextScore;
         
         // Track evidence from winning signal per strategy
         correlation._evidenceByStrategy ??= {};
         const structured = (signal.evidence || []).slice(0, 2).map(e => 
-          typeof e === 'string' ? { reason: e } : e
+          typeof e === 'string' 
+            ? { reason: e } 
+            : { 
+                reason: String(e?.reason ?? ''), 
+                file: e?.file, 
+                line: e?.line 
+              }
         );
         correlation._evidenceByStrategy[strategyName] = structured;
       }
       
-      // Track all relationships
-      correlation.relationships.add(signal.relationship);
+      // Track all relationships (guard against undefined)
+      if (signal.relationship) {
+        correlation.relationships.add(signal.relationship);
+      }
     });
   });
   
@@ -600,7 +625,8 @@ function aggregateCorrelations(userCorrelations, strategySignals, strategiesByNa
       let totalWeight = 0;
       Object.entries(corr.scores).forEach(([name, confidence]) => {
         const weight = corr.weights[name] || 1.0;
-        weightedSum += confidence * weight;
+        const clampedConfidence = clamp01(confidence); // Ensure clamped here too
+        weightedSum += clampedConfidence * weight;
         totalWeight += weight;
       });
       corr.finalScore = totalWeight > 0 ? Math.min(1.0, weightedSum / totalWeight) : 0;
@@ -1485,6 +1511,8 @@ module.exports = {
   selectCandidatePairs,
   aggregateCorrelations,
   dedupeEvidence,
+  clamp01,
+  hasFileLine,
   // Strategy classes
   CorrelationStrategy,
   EntityCorrelationStrategy,
