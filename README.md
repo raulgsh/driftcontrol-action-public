@@ -315,12 +315,31 @@ DriftControl will **NOT**:
 
 ### Dependency Security Scanning
 
-DriftControl automatically detects known vulnerable packages and security issues:
+DriftControl provides **basic security checks** for a limited set of known critical vulnerabilities:
 
-- **Known Malicious Packages**: event-stream, flatmap-stream
-- **Version-Specific Vulnerabilities**: eslint-scope@3.7.2
-- **Transitive Dependencies**: Analyzes package-lock.json for deep dependency issues
-- **Integrity Verification**: Detects checksum mismatches in lock files
+⚠️ **Important**: This is NOT a comprehensive security scanner. It only checks for a small, hardcoded list of known critical vulnerabilities.
+
+**What DriftControl checks (basic coverage only)**:
+- ✅ 5 known malicious packages (event-stream, flatmap-stream, eslint-scope@3.7.2, bootstrap<3.4.0, lodash<4.17.11)
+- ✅ Major version changes that might introduce breaking changes
+- ✅ Integrity mismatches in package-lock.json
+- ✅ Basic transitive dependency analysis in package-lock.json
+
+**What DriftControl does NOT check**:
+- ❌ Full CVE database (thousands of vulnerabilities)
+- ❌ Real-time vulnerability feeds from npm advisory
+- ❌ Zero-day vulnerabilities
+- ❌ Most security vulnerabilities discovered after 2019
+- ❌ License compliance issues
+- ❌ Supply chain attacks beyond the 5 hardcoded packages
+
+**For comprehensive security scanning, we strongly recommend**:
+1. **Run `npm audit`** in your CI/CD pipeline for full npm advisory coverage
+2. **Enable GitHub Dependabot** for automated security updates  
+3. **Integrate dedicated security tools** like Snyk, WhiteSource, or OWASP Dependency Check
+4. **Use `npm audit fix`** to automatically resolve vulnerabilities
+
+DriftControl complements these tools by providing drift-focused analysis in PR comments, but should not be your primary security scanner.
 
 ### Infrastructure Cost Analysis
 

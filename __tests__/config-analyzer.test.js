@@ -286,9 +286,16 @@ volumes:
     });
   });
 
-  describe('isKnownVulnerablePackage', () => {
-    it('should detect known malicious packages', () => {
+  describe('isKnownVulnerablePackage - transparent security checks', () => {
+    it('should detect known malicious packages with logging', () => {
+      const infoSpy = jest.spyOn(core, 'info');
+      const warningSpy = jest.spyOn(core, 'warning');
+      
       expect(analyzer.isKnownVulnerablePackage('event-stream', '3.3.4')).toBe(true);
+      expect(infoSpy).toHaveBeenCalledWith('Security check: event-stream@3.3.4 (basic check only)');
+      expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('KNOWN VULNERABILITY'));
+      expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('npm-advisory-776'));
+      
       expect(analyzer.isKnownVulnerablePackage('flatmap-stream', '0.1.1')).toBe(true);
     });
 
@@ -297,18 +304,68 @@ volumes:
       expect(analyzer.isKnownVulnerablePackage('eslint-scope', '3.7.3')).toBe(false);
     });
 
-    it('should detect packages with version constraints', () => {
-      expect(analyzer.isKnownVulnerablePackage('bootstrap', '3.3.0')).toBe(false);
-      expect(analyzer.isKnownVulnerablePackage('lodash', '4.17.10')).toBe(false);
+    it('should detect packages with version constraints using compareVersions', () => {
+      // Test the new compareVersions method
+      expect(analyzer.compareVersions('3.3.0', '3.4.0')).toBe(-1);
+      expect(analyzer.compareVersions('4.17.10', '4.17.11')).toBe(-1);
+      expect(analyzer.compareVersions('4.17.12', '4.17.11')).toBe(1);
+      
+      // Bootstrap < 3.4.0 should be vulnerable
+      expect(analyzer.isKnownVulnerablePackage('bootstrap', '3.3.0')).toBe(true);
+      expect(analyzer.isKnownVulnerablePackage('bootstrap', '3.4.1')).toBe(false);
+      
+      // Lodash < 4.17.11 should be vulnerable
+      expect(analyzer.isKnownVulnerablePackage('lodash', '4.17.10')).toBe(true);
+      expect(analyzer.isKnownVulnerablePackage('lodash', '4.17.12')).toBe(false);
     });
 
     it('should return false for safe packages', () => {
       expect(analyzer.isKnownVulnerablePackage('express', '4.18.0')).toBe(false);
       expect(analyzer.isKnownVulnerablePackage('react', '18.0.0')).toBe(false);
     });
+    
+    it('should only check 5 hardcoded packages for transparency', () => {
+      // This test verifies that only 5 specific packages are checked
+      // Any other vulnerable package would not be detected
+      expect(analyzer.isKnownVulnerablePackage('minimist', '0.0.8')).toBe(false); // Known CVE but not in our list
+      expect(analyzer.isKnownVulnerablePackage('serialize-javascript', '1.9.0')).toBe(false); // Known CVE but not in our list
+    });
   });
 
   describe('analyzePackageJson enhanced', () => {
+    it('should detect vulnerable dependencies and recommend npm audit', async () => {
+      const files = [
+        { filename: 'package.json', status: 'modified' }
+      ];
+      
+      const headPackage = {
+        dependencies: {
+          'event-stream': '3.3.4'
+        }
+      };
+      
+      const basePackage = {
+        dependencies: {}
+      };
+      
+      mockOctokit.rest.repos.getContent
+        .mockResolvedValueOnce({
+          data: { content: Buffer.from(JSON.stringify(headPackage)).toString('base64') }
+        })
+        .mockResolvedValueOnce({
+          data: { content: Buffer.from(JSON.stringify(basePackage)).toString('base64') }
+        });
+      
+      const result = await analyzer.analyzePackageJson(
+        mockOctokit, 'owner', 'repo', 'sha123', 'baseSha', 'package.json'
+      );
+      
+      expect(result.changes).toContain('DEPENDENCY_ADDED: event-stream');
+      expect(result.changes).toContain('SECURITY_VULNERABILITY: event-stream');
+      expect(result.changes).toContain('SECURITY_RECOMMENDATION: Run \'npm audit\' for comprehensive vulnerability scanning');
+      expect(result.severity).toBe('high');
+    });
+    
     it('should detect major version bumps', async () => {
       const files = [
         { filename: 'package.json', status: 'modified' }

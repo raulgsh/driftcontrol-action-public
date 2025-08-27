@@ -336,6 +336,7 @@ class ConfigAnalyzer {
           // Check if it's a known vulnerable package
           if (this.isKnownVulnerablePackage(name, version)) {
             changes.push(`SECURITY_VULNERABILITY: ${name}`);
+            changes.push(`SECURITY_RECOMMENDATION: Run 'npm audit' for comprehensive vulnerability scanning`);
           }
         } else if (baseDeps[name] !== version) {
           // Analyze version change
@@ -387,24 +388,84 @@ class ConfigAnalyzer {
     };
   }
   
-  // Check for known security vulnerabilities (simplified - would use real database in production)
+  // Basic security vulnerability check - NOT comprehensive
   isKnownVulnerablePackage(packageName, version) {
-    // This is a simplified check - in production, would query CVE database
-    const knownVulnerable = [
-      'event-stream', // known malicious package
-      'flatmap-stream', // known malicious package
-      'eslint-scope@3.7.2', // known compromised version
-      'bootstrap@<3.4.0', // known XSS vulnerability
-      'lodash@<4.17.11' // known prototype pollution
-    ];
+    // IMPORTANT: This is a basic check for demonstration purposes only.
+    // For comprehensive security scanning, users should integrate:
+    // - npm audit (run in CI/CD pipeline)
+    // - GitHub Dependabot
+    // - Dedicated security tools (Snyk, WhiteSource, etc.)
     
-    return knownVulnerable.some(vuln => {
-      if (vuln.includes('@')) {
-        const [name, vulnVersion] = vuln.split('@');
-        return packageName === name && version === vulnVersion;
+    core.info(`Security check: ${packageName}@${version} (basic check only)`);
+    
+    // Known critical vulnerabilities (manually maintained)
+    // This list represents only a small sample of known issues
+    const criticalVulnerabilities = {
+      'event-stream': { 
+        reason: 'Malicious code injection - cryptocurrency theft (2018)', 
+        allVersions: true,
+        cve: 'npm-advisory-776'
+      },
+      'flatmap-stream': { 
+        reason: 'Cryptocurrency mining malware', 
+        allVersions: true,
+        cve: 'npm-advisory-737'
+      },
+      'eslint-scope': { 
+        reason: 'Account takeover vulnerability - malicious package published', 
+        versions: ['3.7.2'],
+        cve: 'npm-advisory-679'
+      },
+      'bootstrap': {
+        reason: 'XSS vulnerability in tooltip/popover',
+        maxVersion: '3.4.0',
+        cve: 'CVE-2018-14041'
+      },
+      'lodash': {
+        reason: 'Prototype pollution vulnerability',
+        maxVersion: '4.17.11',
+        cve: 'CVE-2019-10744'
       }
-      return packageName === vuln;
-    });
+    };
+    
+    const vuln = criticalVulnerabilities[packageName];
+    if (!vuln) return false;
+    
+    // Check version constraints
+    if (vuln.allVersions) {
+      core.warning(`KNOWN VULNERABILITY: ${packageName} - ${vuln.reason} (${vuln.cve})`);
+      return true;
+    }
+    
+    if (vuln.versions && vuln.versions.includes(version)) {
+      core.warning(`KNOWN VULNERABILITY: ${packageName}@${version} - ${vuln.reason} (${vuln.cve})`);
+      return true;
+    }
+    
+    if (vuln.maxVersion) {
+      // Simple version comparison
+      const cleanVersion = version.replace(/^[\^~=v]/, '');
+      if (this.compareVersions(cleanVersion, vuln.maxVersion) <= 0) {
+        core.warning(`KNOWN VULNERABILITY: ${packageName}@${version} - ${vuln.reason} (${vuln.cve})`);
+        return true;
+      }
+    }
+    
+    return false;
+  }
+  
+  // Helper method for version comparison
+  compareVersions(v1, v2) {
+    const parts1 = v1.split('.').map(Number);
+    const parts2 = v2.split('.').map(Number);
+    
+    for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+      const part1 = parts1[i] || 0;
+      const part2 = parts2[i] || 0;
+      if (part1 < part2) return -1;
+      if (part1 > part2) return 1;
+    }
+    return 0;
   }
   
   // Analyze package-lock.json for transitive dependency changes
@@ -475,6 +536,10 @@ class ConfigAnalyzer {
         
         for (const vuln of vulnerablePackages) {
           changes.push(`SECURITY_VULNERABILITY: ${vuln} (transitive)`);
+        }
+        
+        if (vulnerablePackages.length > 0) {
+          changes.push(`SECURITY_RECOMMENDATION: Run 'npm audit fix' to resolve transitive vulnerabilities`);
         }
         
         // Check integrity changes (potential security issue)
