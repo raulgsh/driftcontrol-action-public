@@ -788,5 +788,93 @@ describe('Integration Tests', () => {
       expect(rootCauses[0].result).toBe(result1);
       expect(rootCauses[0].type).toBe('root_cause');
     });
+    
+    test('should apply user-defined correlation rules with confidence 1.0', () => {
+      const { correlateAcrossLayers } = require('../src/index');
+      
+      const driftResults = [
+        { type: 'api', file: 'api/users.yml', endpoints: ['/v1/users/{userId}'], metadata: { entities: ['users'] } },
+        { type: 'database', file: 'migrations/001.sql', entities: ['application_users'], changes: ['CREATE TABLE application_users'] }
+      ];
+      
+      const correlationConfig = {
+        correlationRules: [
+          {
+            type: 'api_to_db',
+            source: '/v1/users/{userId}',
+            target: 'application_users',
+            description: 'User API to DB mapping',
+            confidence: 1.0,
+            userDefined: true
+          }
+        ]
+      };
+      
+      const correlations = correlateAcrossLayers(driftResults, [], correlationConfig);
+      
+      // Should find the user-defined correlation
+      const userDefinedCorr = correlations.find(c => c.userDefined);
+      expect(userDefinedCorr).toBeDefined();
+      expect(userDefinedCorr.confidence).toBe(1.0);
+      expect(userDefinedCorr.relationship).toBe('api_to_db');
+    });
+    
+    test('should ignore specified correlation pairs', () => {
+      const { correlateAcrossLayers } = require('../src/index');
+      
+      const driftResults = [
+        { type: 'configuration', file: 'package-lock.json', changes: ['Dependencies updated'] },
+        { type: 'api', file: 'openapi.yml', changes: ['API spec updated'] }
+      ];
+      
+      const correlationConfig = {
+        correlationRules: [
+          {
+            type: 'ignore',
+            source: 'package-lock.json',
+            target: 'openapi.yml',
+            reason: 'Dependency updates rarely affect API',
+            confidence: 1.0,
+            userDefined: true
+          }
+        ]
+      };
+      
+      const correlations = correlateAcrossLayers(driftResults, [], correlationConfig);
+      
+      // Should not create correlation for ignored pair
+      const ignoredCorr = correlations.find(c => 
+        c.source.file === 'package-lock.json' && c.target.file === 'openapi.yml'
+      );
+      expect(ignoredCorr).toBeUndefined();
+    });
+    
+    test('should upgrade severity for user-defined correlations', () => {
+      const riskScorer = require('../src/risk-scorer');
+      
+      const result = {
+        type: 'api',
+        file: 'api/users.yml',
+        severity: 'low',
+        changes: ['API endpoint modified']
+      };
+      
+      const correlations = [
+        {
+          source: result,
+          target: { file: 'db/users.sql' },
+          confidence: 1.0,
+          userDefined: true,
+          relationship: 'api_to_db',
+          rule: { description: 'Critical user data correlation' }
+        }
+      ];
+      
+      riskScorer.assessCorrelationImpact(result, correlations);
+      
+      // Should upgrade severity due to user-defined correlation
+      expect(result.severity).toBe('medium');
+      expect(result.reasoning).toContainEqual(expect.stringContaining('user-defined correlation'));
+    });
   });
 });

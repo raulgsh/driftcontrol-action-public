@@ -20,6 +20,7 @@ async function run() {
     const costThreshold = core.getInput('cost_threshold');
     const configYamlGlob = core.getInput('config_yaml_glob');
     const featureFlagsPath = core.getInput('feature_flags_path');
+    const correlationConfigPath = core.getInput('correlation_config_path');
     
     // LLM configuration for enhanced explanations
     const llmProvider = core.getInput('llm_provider');
@@ -84,6 +85,15 @@ async function run() {
     const iacAnalyzer = new IaCAnalyzer();
     const configAnalyzer = new ConfigAnalyzer();
     
+    // Load correlation configuration if provided
+    let correlationConfig = null;
+    if (correlationConfigPath) {
+      correlationConfig = await configAnalyzer.loadCorrelationConfig(octokit, owner, repo, correlationConfigPath);
+      if (correlationConfig.loaded) {
+        core.info(`Correlation config loaded with ${correlationConfig.correlationRules.length} rules`);
+      }
+    }
+    
     // Detect OpenAPI spec file renames
     const { actualOpenApiPath, renamedFromPath } = openApiAnalyzer.detectSpecRenames(files, openApiPath);
     
@@ -146,8 +156,8 @@ async function run() {
     
     // Cross-layer correlation analysis
     if (driftResults.length > 1) {
-      // Build correlation graph from existing results
-      const correlations = correlateAcrossLayers(driftResults, files);
+      // Build correlation graph from existing results (pass correlation config)
+      const correlations = correlateAcrossLayers(driftResults, files, correlationConfig);
       
       // Identify root causes
       const rootCauses = identifyRootCauses(correlations, driftResults);
@@ -239,8 +249,9 @@ async function run() {
 
 
 // Cross-layer correlation helper functions
-function correlateAcrossLayers(driftResults, files) {
+function correlateAcrossLayers(driftResults, files, correlationConfig = null) {
   const correlations = [];
+  const processedPairs = new Set(); // Track processed pairs to avoid duplicates
   
   // Build comprehensive metadata for each result
   driftResults.forEach(result => {
@@ -249,7 +260,67 @@ function correlateAcrossLayers(driftResults, files) {
     }
   });
   
-  // Multi-layer correlation strategies
+  // 0. Apply user-defined correlation rules FIRST (highest priority)
+  if (correlationConfig && correlationConfig.correlationRules && correlationConfig.correlationRules.length > 0) {
+    core.info(`Applying ${correlationConfig.correlationRules.length} user-defined correlation rules`);
+    
+    for (const rule of correlationConfig.correlationRules) {
+      // Handle ignore rules
+      if (rule.type === 'ignore') {
+        // Mark this pair as processed to skip in heuristic correlation
+        const ignoreKey = `${rule.source}:${rule.target}`;
+        processedPairs.add(ignoreKey);
+        core.info(`Ignoring correlation between ${rule.source} and ${rule.target}: ${rule.reason}`);
+        continue;
+      }
+      
+      // Find matching drift results for the rule
+      const sourceResults = driftResults.filter(r => {
+        // Match by file path, endpoint, or resource ID
+        if (r.file && (r.file === rule.source || r.file.includes(rule.source))) return true;
+        if (r.endpoints && r.endpoints.some(e => e === rule.source)) return true;
+        if (r.resources && r.resources.some(res => res === rule.source)) return true;
+        if (r.type && rule.source && rule.source.includes(r.type)) return true;
+        return false;
+      });
+      
+      const targetResults = driftResults.filter(r => {
+        // Match by file path, table name, or config file
+        if (r.file && (r.file === rule.target || r.file.includes(rule.target))) return true;
+        if (r.entities && r.entities.some(e => e === rule.target)) return true;
+        if (r.type === 'database' && r.changes) {
+          // Check if any change mentions the target table
+          return r.changes.some(c => c.toLowerCase().includes(rule.target.toLowerCase()));
+        }
+        if (r.type && rule.target && rule.target.includes(r.type)) return true;
+        return false;
+      });
+      
+      // Create correlations for all matching pairs
+      sourceResults.forEach(source => {
+        targetResults.forEach(target => {
+          if (source !== target) {
+            const pairKey = `${source.file || source.type}:${target.file || target.type}`;
+            processedPairs.add(pairKey); // Mark as processed
+            
+            correlations.push({
+              source: source,
+              target: target,
+              relationship: rule.type,
+              confidence: 1.0, // User-defined rules have maximum confidence
+              userDefined: true,
+              details: rule.description || `User-defined ${rule.type} correlation`,
+              rule: rule // Keep original rule for reference
+            });
+            
+            core.info(`Applied user-defined correlation: ${rule.type} between ${source.file || source.type} and ${target.file || target.type}`);
+          }
+        });
+      });
+    }
+  }
+  
+  // Multi-layer correlation strategies (existing heuristic logic)
   
   // 1. Entity-based correlation
   const apiChanges = driftResults.filter(r => r.type === 'api');
@@ -257,6 +328,12 @@ function correlateAcrossLayers(driftResults, files) {
   
   apiChanges.forEach(api => {
     dbChanges.forEach(db => {
+      // Skip if this pair was already processed by user-defined rules
+      const pairKey = `${api.file || api.type}:${db.file || db.type}`;
+      if (processedPairs.has(pairKey)) {
+        return; // Skip this pair
+      }
+      
       // Use new sophisticated detectRelation
       if (detectRelation(api, db)) {
         // Extract detailed correlation info
@@ -448,6 +525,19 @@ function correlateAcrossLayers(driftResults, files) {
   driftResults.forEach((result1, i) => {
     driftResults.slice(i + 1).forEach(result2 => {
       if (result1.file && result2.file) {
+        // Check if this pair should be ignored
+        const pairKey1 = `${result1.file}:${result2.file}`;
+        const pairKey2 = `${result2.file}:${result1.file}`;
+        const fileBasename1 = result1.file.split('/').pop();
+        const fileBasename2 = result2.file.split('/').pop();
+        const basenamePairKey1 = `${fileBasename1}:${fileBasename2}`;
+        const basenamePairKey2 = `${fileBasename2}:${fileBasename1}`;
+        
+        if (processedPairs.has(pairKey1) || processedPairs.has(pairKey2) || 
+            processedPairs.has(basenamePairKey1) || processedPairs.has(basenamePairKey2)) {
+          return; // Skip this pair
+        }
+        
         const dir1 = result1.file.substring(0, result1.file.lastIndexOf('/'));
         const dir2 = result2.file.substring(0, result2.file.lastIndexOf('/'));
         

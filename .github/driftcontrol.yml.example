@@ -1,0 +1,59 @@
+# DriftControl Configuration File Example
+# Place this file at .github/driftcontrol.yml in your repository
+
+# User-defined correlation rules for explicit relationship mappings
+# These rules override heuristic correlations with confidence 1.0
+correlation_rules:
+  # Map API endpoints to database tables
+  - type: api_to_db
+    api_endpoint: /v1/users/{userId}
+    db_table: application_users
+    description: "Maps the public user API to the internal user table"
+  
+  - type: api_to_db
+    api_endpoint: /v1/posts
+    db_table: blog_posts
+    description: "Maps blog post API to posts table"
+  
+  - type: api_to_db
+    api_endpoint: /v1/orders/{orderId}
+    db_table: customer_orders
+    description: "Maps order API to orders table"
+  
+  # Map Infrastructure as Code resources to configuration files
+  - type: iac_to_config
+    iac_resource_id: aws_lambda_function.user_profile_processor
+    config_file: services/user-profile/config.json
+    description: "Lambda function uses user profile service configuration"
+  
+  - type: iac_to_config
+    iac_resource_id: aws_s3_bucket.static_assets
+    config_file: config/cdn.yaml
+    description: "S3 bucket configuration for CDN"
+  
+  # Ignore known irrelevant correlations to reduce noise
+  - type: ignore
+    source: package-lock.json
+    target: openapi.yml
+    reason: "Dependency updates rarely impact the API spec directly"
+  
+  - type: ignore
+    source: .github/workflows
+    target: migrations
+    reason: "CI/CD changes don't affect database migrations"
+  
+  - type: ignore
+    source: README.md
+    target: src
+    reason: "Documentation changes don't affect source code"
+
+# Additional configuration options (future expansion)
+# severity_overrides:
+#   - path: critical/payments/*
+#     minimum_severity: high
+#     reason: "Payment processing code requires strict review"
+#
+# notification_settings:
+#   - type: slack
+#     webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+#     on_severity: high

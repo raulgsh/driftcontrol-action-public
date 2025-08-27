@@ -128,6 +128,11 @@ const riskScorer = {
     // If no correlations, return result unchanged
     if (!correlations || correlations.length === 0) return result;
     
+    // Separate user-defined and heuristic correlations
+    const userDefinedCorrelations = correlations.filter(c => 
+      c.userDefined && (c.source === result || c.target === result)
+    );
+    
     // Count high-confidence correlations involving this result
     const strongCorrelations = correlations.filter(c => 
       c.confidence > 0.7 && (c.source === result || c.target === result)
@@ -154,25 +159,53 @@ const riskScorer = {
     // Upgrade severity based on correlation impact
     const originalSeverity = result.severity;
     
-    if (cascadeImpact >= 3 && result.severity === 'medium') {
-      result.severity = 'high';
-      result.reasoning = [...(result.reasoning || []), 
-        `Upgraded from medium to high severity: affects ${cascadeImpact} cross-layer components`
-      ];
-      core.info(`Correlation impact: upgraded ${result.file || result.type} from medium to high (${cascadeImpact} components affected)`);
-    } else if (cascadeImpact >= 2 && result.severity === 'low') {
-      result.severity = 'medium';
-      result.reasoning = [...(result.reasoning || []), 
-        `Upgraded from low to medium severity: affects ${cascadeImpact} cross-layer components`
-      ];
-      core.info(`Correlation impact: upgraded ${result.file || result.type} from low to medium (${cascadeImpact} components affected)`);
-    } else if (impactCount >= 4 && result.severity !== 'high') {
-      // Many correlations even if not all different components
-      result.severity = 'high';
-      result.reasoning = [...(result.reasoning || []), 
-        `Upgraded to high severity: ${impactCount} strong cross-layer correlations detected`
-      ];
-      core.info(`Correlation impact: upgraded ${result.file || result.type} to high (${impactCount} strong correlations)`);
+    // User-defined correlations have higher impact weight
+    if (userDefinedCorrelations.length > 0) {
+      // User-defined correlations immediately upgrade severity by one level
+      if (result.severity === 'low') {
+        result.severity = 'medium';
+        result.reasoning = [...(result.reasoning || []), 
+          `Upgraded from low to medium severity: ${userDefinedCorrelations.length} user-defined correlation(s) detected`
+        ];
+        core.info(`User-defined correlation impact: upgraded ${result.file || result.type} from low to medium`);
+      } else if (result.severity === 'medium' && userDefinedCorrelations.length >= 2) {
+        result.severity = 'high';
+        result.reasoning = [...(result.reasoning || []), 
+          `Upgraded from medium to high severity: ${userDefinedCorrelations.length} user-defined correlations detected`
+        ];
+        core.info(`User-defined correlation impact: upgraded ${result.file || result.type} from medium to high`);
+      }
+      
+      // Add user-defined correlation details
+      userDefinedCorrelations.forEach(corr => {
+        if (corr.rule && corr.rule.description) {
+          result.reasoning.push(`User-defined: ${corr.rule.description}`);
+        }
+      });
+    }
+    
+    // Apply standard heuristic-based severity upgrades (if not already upgraded by user rules)
+    if (result.severity === originalSeverity) {
+      if (cascadeImpact >= 3 && result.severity === 'medium') {
+        result.severity = 'high';
+        result.reasoning = [...(result.reasoning || []), 
+          `Upgraded from medium to high severity: affects ${cascadeImpact} cross-layer components`
+        ];
+        core.info(`Correlation impact: upgraded ${result.file || result.type} from medium to high (${cascadeImpact} components affected)`);
+      } else if (cascadeImpact >= 2 && result.severity === 'low') {
+        result.severity = 'medium';
+        result.reasoning = [...(result.reasoning || []), 
+          `Upgraded from low to medium severity: affects ${cascadeImpact} cross-layer components`
+        ];
+        core.info(`Correlation impact: upgraded ${result.file || result.type} from low to medium (${cascadeImpact} components affected)`);
+      } else if (impactCount >= 4 && result.severity !== 'high') {
+        // Many correlations even if not all different components
+        result.severity = 'high';
+        result.reasoning = [...(result.reasoning || []), 
+          `Upgraded to high severity: ${impactCount} strong cross-layer correlations detected`
+        ];
+        core.info(`Correlation impact: upgraded ${result.file || result.type} to high (${impactCount} strong correlations)`);
+      }
     }
     
     // Add correlation details to reasoning if severity was upgraded

@@ -46,6 +46,10 @@ inputs:
     description: 'Path to feature flags configuration file'
     required: false
     default: ''
+  correlation_config_path:
+    description: 'Path to correlation configuration file for explicit relationship mappings'
+    required: false
+    default: '.github/driftcontrol.yml'
   llm_provider:
     description: 'LLM provider for enhanced explanations (openai or anthropic)'
     required: false

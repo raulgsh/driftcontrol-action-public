@@ -27,6 +27,131 @@ describe('Config Analyzer', () => {
     };
   });
 
+  describe('loadCorrelationConfig', () => {
+    it('should load and parse correlation configuration successfully', async () => {
+      const mockConfig = `
+correlation_rules:
+  - type: api_to_db
+    api_endpoint: /v1/users/{userId}
+    db_table: application_users
+    description: "Maps user API to user table"
+  - type: ignore
+    source: package-lock.json
+    target: openapi.yml
+    reason: "Dependency updates don't affect API"
+`;
+      
+      mockOctokit.rest.repos.getContent.mockResolvedValue({
+        data: {
+          content: Buffer.from(mockConfig).toString('base64')
+        }
+      });
+      
+      const result = await analyzer.loadCorrelationConfig(
+        mockOctokit, 'owner', 'repo', '.github/driftcontrol.yml'
+      );
+      
+      expect(result.loaded).toBe(true);
+      expect(result.correlationRules).toHaveLength(2);
+      expect(result.correlationRules[0]).toMatchObject({
+        type: 'api_to_db',
+        confidence: 1.0,
+        userDefined: true,
+        source: '/v1/users/{userId}',
+        target: 'application_users'
+      });
+      expect(result.correlationRules[1]).toMatchObject({
+        type: 'ignore',
+        confidence: 1.0,
+        userDefined: true,
+        source: 'package-lock.json',
+        target: 'openapi.yml'
+      });
+    });
+    
+    it('should handle missing config file gracefully', async () => {
+      mockOctokit.rest.repos.getContent.mockRejectedValue({ status: 404 });
+      
+      const result = await analyzer.loadCorrelationConfig(
+        mockOctokit, 'owner', 'repo', '.github/driftcontrol.yml'
+      );
+      
+      expect(result.loaded).toBe(false);
+      expect(result.correlationRules).toEqual([]);
+      expect(core.info).toHaveBeenCalledWith(
+        'No correlation config found at .github/driftcontrol.yml - using heuristic correlation only'
+      );
+    });
+    
+    it('should handle invalid YAML gracefully', async () => {
+      mockOctokit.rest.repos.getContent.mockResolvedValue({
+        data: {
+          content: Buffer.from('invalid: yaml: content:').toString('base64')
+        }
+      });
+      
+      const result = await analyzer.loadCorrelationConfig(
+        mockOctokit, 'owner', 'repo', '.github/driftcontrol.yml'
+      );
+      
+      expect(result.loaded).toBe(false);
+      expect(result.correlationRules).toEqual([]);
+    });
+    
+    it('should skip rules without type field', async () => {
+      const mockConfig = `
+correlation_rules:
+  - api_endpoint: /v1/users
+    db_table: users
+  - type: api_to_db
+    api_endpoint: /v1/posts
+    db_table: posts
+`;
+      
+      mockOctokit.rest.repos.getContent.mockResolvedValue({
+        data: {
+          content: Buffer.from(mockConfig).toString('base64')
+        }
+      });
+      
+      const result = await analyzer.loadCorrelationConfig(
+        mockOctokit, 'owner', 'repo', '.github/driftcontrol.yml'
+      );
+      
+      expect(result.correlationRules).toHaveLength(1);
+      expect(result.correlationRules[0].type).toBe('api_to_db');
+      expect(core.warning).toHaveBeenCalled();
+    });
+    
+    it('should handle IaC to config correlation rules', async () => {
+      const mockConfig = `
+correlation_rules:
+  - type: iac_to_config
+    iac_resource_id: aws_lambda_function.processor
+    config_file: config/processor.yml
+    description: "Lambda function configuration"
+`;
+      
+      mockOctokit.rest.repos.getContent.mockResolvedValue({
+        data: {
+          content: Buffer.from(mockConfig).toString('base64')
+        }
+      });
+      
+      const result = await analyzer.loadCorrelationConfig(
+        mockOctokit, 'owner', 'repo', '.github/driftcontrol.yml'
+      );
+      
+      expect(result.correlationRules[0]).toMatchObject({
+        type: 'iac_to_config',
+        source: 'aws_lambda_function.processor',
+        target: 'config/processor.yml',
+        confidence: 1.0,
+        userDefined: true
+      });
+    });
+  });
+
   describe('Security Features', () => {
     it('should redact sensitive key names', () => {
       const config = {

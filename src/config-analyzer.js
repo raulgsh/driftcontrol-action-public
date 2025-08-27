@@ -10,6 +10,70 @@ class ConfigAnalyzer {
     this.sensitivePatterns = /password|secret|token|key|credential|auth|api_key|private|pwd/i;
   }
 
+  // Load user-defined correlation configuration from .github/driftcontrol.yml
+  async loadCorrelationConfig(octokit, owner, repo, correlationConfigPath) {
+    try {
+      core.info(`Loading correlation config from: ${correlationConfigPath}`);
+      
+      // Try to fetch the correlation config file
+      const { data: configData } = await octokit.rest.repos.getContent({
+        owner,
+        repo,
+        path: correlationConfigPath,
+        ref: 'HEAD' // Use HEAD to get from default branch
+      });
+      
+      const configContent = Buffer.from(configData.content, 'base64').toString();
+      const config = yaml.parse(configContent);
+      
+      // Validate and normalize correlation rules
+      const correlationRules = [];
+      
+      if (config.correlation_rules && Array.isArray(config.correlation_rules)) {
+        for (const rule of config.correlation_rules) {
+          // Validate rule structure
+          if (!rule.type) {
+            core.warning(`Correlation rule missing type: ${JSON.stringify(rule)}`);
+            continue;
+          }
+          
+          // Normalize rule with confidence 1.0 for user-defined rules
+          const normalizedRule = {
+            ...rule,
+            confidence: 1.0, // User-defined rules have maximum confidence
+            source: rule.source || rule.api_endpoint || rule.iac_resource_id,
+            target: rule.target || rule.db_table || rule.config_file,
+            userDefined: true
+          };
+          
+          correlationRules.push(normalizedRule);
+          core.info(`Loaded ${rule.type} correlation rule: ${normalizedRule.source} -> ${normalizedRule.target}`);
+        }
+      }
+      
+      core.info(`Successfully loaded ${correlationRules.length} correlation rules from config`);
+      return {
+        correlationRules,
+        configPath: correlationConfigPath,
+        loaded: true
+      };
+      
+    } catch (error) {
+      // Config file is optional - not finding it is not an error
+      if (error.status === 404) {
+        core.info(`No correlation config found at ${correlationConfigPath} - using heuristic correlation only`);
+      } else {
+        core.warning(`Failed to load correlation config: ${error.message}`);
+      }
+      
+      return {
+        correlationRules: [],
+        configPath: correlationConfigPath,
+        loaded: false
+      };
+    }
+  }
+
   async analyzeConfigFiles(files, octokit, owner, repo, pullRequest, configYamlGlob, featureFlagsPath) {
     const pullRequestHeadSha = pullRequest.head.sha;
     const pullRequestBaseSha = pullRequest.base.sha;

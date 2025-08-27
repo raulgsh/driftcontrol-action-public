@@ -82,6 +82,7 @@ jobs:
 | `llm_api_key` | API key for LLM provider (use secrets) | No | - |
 | `llm_model` | Model name (gpt-4, claude-3-opus, etc) | No | - |
 | `llm_max_tokens` | Max tokens for LLM response | No | `150` |
+| `correlation_config_path` | Path to correlation configuration file | No | `.github/driftcontrol.yml` |
 | `fail_on_medium` | Block merges on medium-severity drift | No | `false` |
 | `override` | Bypass merge blocks (with audit trail) | No | `false` |
 
@@ -222,6 +223,54 @@ ALTER TABLE profiles ADD CONSTRAINT profiles_user_id_unique UNIQUE(user_id);
 
 💡 Suggestion: Document security group changes in runbook
 ```
+
+## 🔗 Configuration-Driven Correlation
+
+DriftControl can automatically detect relationships between different components (API ↔ Database, Infrastructure ↔ Config), but sometimes you know these relationships better than any heuristic can determine. You can now define explicit correlations in a configuration file.
+
+### Setting Up Correlation Rules
+
+Create a file at `.github/driftcontrol.yml` in your repository:
+
+```yaml
+# .github/driftcontrol.yml
+correlation_rules:
+  # Map API endpoints to database tables
+  - type: api_to_db
+    api_endpoint: /v1/users/{userId}
+    db_table: application_users
+    description: "Maps the public user API to the internal user table"
+  
+  # Map Infrastructure resources to configuration files
+  - type: iac_to_config
+    iac_resource_id: aws_lambda_function.user_processor
+    config_file: config/user-service.yml
+    description: "Lambda function configuration"
+  
+  # Ignore known irrelevant correlations to reduce noise
+  - type: ignore
+    source: package-lock.json
+    target: openapi.yml
+    reason: "Dependency updates rarely affect API spec"
+```
+
+### Benefits of Configuration-Driven Correlation
+
+1. **Maximum Confidence**: User-defined rules have confidence 1.0, overriding heuristic correlations
+2. **Reduce False Positives**: Explicitly ignore unrelated components that happen to change together
+3. **Cross-Team Knowledge**: Capture architectural decisions and relationships in code
+4. **Severity Escalation**: Correlated changes automatically increase severity levels
+5. **Root Cause Analysis**: Better identify which changes trigger cascading effects
+
+### Example Impact
+
+When DriftControl detects changes in both `/v1/users/{userId}` API endpoint and the `application_users` table, it will:
+- Recognize these are correlated based on your configuration
+- Upgrade severity (e.g., from Low → Medium or Medium → High)
+- Provide context about the cross-layer impact
+- Help reviewers understand the full scope of changes
+
+See [.github/driftcontrol.yml.example](.github/driftcontrol.yml.example) for a complete configuration example.
 
 ## 📊 Performance Benchmarks
 
