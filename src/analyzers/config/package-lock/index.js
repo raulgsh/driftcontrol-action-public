@@ -3,6 +3,38 @@ const core = require('@actions/core');
 const riskScorer = require('../../../risk-scorer');
 const { analyzeVersionChange, isKnownVulnerablePackage } = require('../utils');
 
+// Normalize lockfile data to consistent format regardless of version
+function normalizeLockfileData(lockData) {
+  const version = lockData.lockfileVersion || 1;
+  const normalized = {
+    version,
+    dependencies: {}
+  };
+  
+  if (version === 1) {
+    // v1: Use dependencies directly (flat structure)
+    normalized.dependencies = lockData.dependencies || {};
+  } else if (version >= 2) {
+    // v2/v3: Convert packages format to flat dependencies
+    const packages = lockData.packages || {};
+    for (const [path, info] of Object.entries(packages)) {
+      // Skip root package entry (empty string key)
+      if (path && path.startsWith('node_modules/')) {
+        const name = path.replace('node_modules/', '');
+        normalized.dependencies[name] = info;
+      }
+    }
+    // v2 also has dependencies for backward compatibility - merge if present
+    if (version === 2 && lockData.dependencies) {
+      // Packages data takes precedence over legacy dependencies
+      normalized.dependencies = { ...lockData.dependencies, ...normalized.dependencies };
+    }
+  }
+  
+  core.info(`Normalized lockfile v${version}: ${Object.keys(normalized.dependencies).length} dependencies`);
+  return normalized;
+}
+
 // Analyze package-lock.json for transitive dependency changes
 async function analyzePackageLock(octokit, owner, repo, pullRequestHeadSha, pullRequestBaseSha, lockPath) {
   try {
@@ -40,9 +72,18 @@ async function analyzePackageLock(octokit, owner, repo, pullRequestHeadSha, pull
     if (!baseLock) {
       changes.push('NEW_LOCK_FILE: package-lock.json created');
     } else {
-      // Compare lock file versions
-      const baseDependencies = baseLock.dependencies || baseLock.packages || {};
-      const headDependencies = headLock.dependencies || headLock.packages || {};
+      // Normalize both lockfiles to consistent format for reliable comparison
+      const normalizedBase = normalizeLockfileData(baseLock);
+      const normalizedHead = normalizeLockfileData(headLock);
+
+      // Log version changes as potential compatibility issue
+      if (normalizedBase.version !== normalizedHead.version) {
+        core.warning(`Lockfile version changed from v${normalizedBase.version} to v${normalizedHead.version} - may indicate npm upgrade`);
+        changes.push(`LOCKFILE_VERSION_CHANGE: v${normalizedBase.version} → v${normalizedHead.version}`);
+      }
+
+      const baseDependencies = normalizedBase.dependencies;
+      const headDependencies = normalizedHead.dependencies;
       
       let transitiveChanges = 0;
       let vulnerablePackages = [];
