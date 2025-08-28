@@ -7,6 +7,11 @@ module.exports = {
   testMatch: [
     '**/__tests__/**/*.test.js'
   ],
+  testPathIgnorePatterns: [
+    '/node_modules/',
+    '/dist/',
+    '/build/'
+  ],
   verbose: true,
   clearMocks: true
 };
