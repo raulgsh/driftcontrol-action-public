@@ -1,88 +1,26 @@
 // Terraform plan analysis
 const core = require('@actions/core');
 const riskScorer = require('../../risk-scorer');
-const utils = require('./utils');
+const { 
+  estimateResourceCost, 
+  fetchBaseAndHeadTemplates,
+  buildResourceMap,
+  analyzeResourceChanges,
+  buildIaCResult
+} = require('./utils');
 
 async function analyzeTerraformPlan(octokit, owner, repo, pullRequest, terraformPath, costThreshold, contentFetcher = null) {
   try {
     core.info(`Analyzing Terraform plan drift at: ${terraformPath}`);
     
-    let headPlan = null;
-    let basePlan = null;
-    let headError = null;
-    let baseError = null;
+    // Use generic template fetching with JSON parser
+    const { baseTemplate: basePlan, headTemplate: headPlan } = await fetchBaseAndHeadTemplates(
+      octokit, owner, repo, terraformPath, pullRequest,
+      content => JSON.parse(content),
+      contentFetcher
+    );
     
-    if (contentFetcher) {
-      // Use ContentFetcher for batch fetching
-      const results = await contentFetcher.batchFetch([
-        { path: terraformPath, ref: pullRequest.head.sha, description: 'head Terraform plan' },
-        { path: terraformPath, ref: pullRequest.base.sha, description: 'base Terraform plan' }
-      ]);
-      
-      try {
-        if (results[0]) {
-          headPlan = JSON.parse(results[0].content);
-          core.info(`Parsed head Terraform plan from: ${terraformPath}`);
-        } else {
-          headError = new Error('Not Found');
-          core.info(`No Terraform plan found in head branch at ${terraformPath}`);
-        }
-      } catch (error) {
-        headError = error;
-        core.info(`Failed to parse head Terraform plan: ${error.message}`);
-      }
-      
-      try {
-        if (results[1]) {
-          basePlan = JSON.parse(results[1].content);
-          core.info(`Parsed base Terraform plan from: ${terraformPath}`);
-        } else {
-          baseError = new Error('Not Found');
-          core.info(`No Terraform plan found in base branch at ${terraformPath}`);
-        }
-      } catch (error) {
-        baseError = error;
-        core.info(`Failed to parse base Terraform plan: ${error.message}`);
-      }
-    } else {
-      // Legacy method for backward compatibility
-      try {
-        const { data: headData } = await octokit.rest.repos.getContent({
-          owner,
-          repo,
-          path: terraformPath,
-          ref: pullRequest.head.sha
-        });
-        const headContent = Buffer.from(headData.content, 'base64').toString();
-        headPlan = JSON.parse(headContent);
-        core.info(`Parsed head Terraform plan from: ${terraformPath}`);
-      } catch (error) {
-        headError = error;
-        core.info(`No Terraform plan found in head branch at ${terraformPath}: ${error.message}`);
-      }
-      
-      try {
-        const { data: baseData } = await octokit.rest.repos.getContent({
-          owner,
-          repo,
-          path: terraformPath,
-          ref: pullRequest.base.sha
-        });
-        const baseContent = Buffer.from(baseData.content, 'base64').toString();
-        basePlan = JSON.parse(baseContent);
-        core.info(`Parsed base Terraform plan from: ${terraformPath}`);
-      } catch (error) {
-        baseError = error;
-        core.info(`No Terraform plan found in base branch at ${terraformPath}: ${error.message}`);
-      }
-    }
-    
-    // If both fetches failed with actual errors (not just missing files), propagate the error
-    if (headError && baseError && headError.message !== 'Not Found' && baseError.message !== 'Not Found') {
-      throw headError; // Re-throw to trigger the warning in outer catch
-    }
-    
-    const iacChanges = [];
+    let iacChanges = [];
     let estimatedCostIncrease = 0;
     
     // Handle plan deletion (HIGH severity)
@@ -99,7 +37,7 @@ async function analyzeTerraformPlan(octokit, owner, repo, pullRequest, terraform
           
           if (actions.includes('create')) {
             iacChanges.push(`RESOURCE_ADDITION: ${resource.type} - ${resource.address}`);
-            estimatedCostIncrease += utils.estimateResourceCost(resource.type);
+            estimatedCostIncrease += estimateResourceCost(resource.type);
             
             // Flag security-sensitive additions
             if (resource.type === 'aws_security_group' || resource.type === 'aws_security_group_rule') {
@@ -125,107 +63,24 @@ async function analyzeTerraformPlan(octokit, owner, repo, pullRequest, terraform
     }
     // Compare base and head plans for drift
     else if (basePlan && headPlan) {
-      // Build resource maps for comparison
-      const baseResources = new Map();
-      const headResources = new Map();
+      // Build resource maps using shared utility
+      const baseMap = buildResourceMap(basePlan, 'resource_changes');
+      const headMap = buildResourceMap(headPlan, 'resource_changes');
       
-      if (basePlan.resource_changes) {
-        for (const resource of basePlan.resource_changes) {
-          baseResources.set(resource.address, resource);
-        }
-      }
+      // Analyze resource changes using shared utility
+      const result = analyzeResourceChanges(
+        baseMap,
+        headMap,
+        resource => resource.type, // Terraform resource type accessor
+        type => type === 'aws_security_group' || type === 'aws_security_group_rule' // Terraform security check
+      );
       
-      if (headPlan.resource_changes) {
-        for (const resource of headPlan.resource_changes) {
-          headResources.set(resource.address, resource);
-        }
-      }
-      
-      // Check for removed resources (exist in base but not in head)
-      for (const [address, baseResource] of baseResources) {
-        if (!headResources.has(address)) {
-          iacChanges.push(`RESOURCE_DELETION: ${baseResource.type} - ${address}`);
-          
-          // Flag security-sensitive deletions
-          if (baseResource.type === 'aws_security_group' || baseResource.type === 'aws_security_group_rule') {
-            iacChanges.push(`SECURITY_GROUP_DELETION: ${address}`);
-          }
-        }
-      }
-      
-      // Check for added resources and modifications
-      for (const [address, headResource] of headResources) {
-        const baseResource = baseResources.get(address);
-        
-        if (!baseResource) {
-          // Resource added
-          iacChanges.push(`RESOURCE_ADDITION: ${headResource.type} - ${address}`);
-          const change = headResource.change || {};
-          const actions = change.actions || [];
-          if (actions.includes('create')) {
-            estimatedCostIncrease += utils.estimateResourceCost(headResource.type);
-          }
-          
-          // Flag security-sensitive additions
-          if (headResource.type === 'aws_security_group' || headResource.type === 'aws_security_group_rule') {
-            iacChanges.push(`SECURITY_GROUP_ADDITION: ${address}`);
-          }
-        } else {
-          // Deep comparison of resource properties
-          const change = headResource.change || {};
-          const actions = change.actions || [];
-          
-          if (actions.includes('update') || actions.includes('modify')) {
-            // Extract before and after states for comparison
-            const beforeState = change.before || baseResource.change?.after || {};
-            const afterState = change.after || {};
-            
-            // Perform detailed property comparison
-            const propertyChanges = utils.compareResourceProperties(
-              beforeState,
-              afterState,
-              address
-            );
-            
-            // Add high-level change for risk scorer compatibility
-            if (propertyChanges.length > 0) {
-              iacChanges.push(`RESOURCE_MODIFICATION: ${headResource.type} - ${address}`);
-              
-              // Add detailed property changes
-              for (const propChange of propertyChanges) {
-                iacChanges.push(propChange.detailed);
-                
-                // Flag security-sensitive changes
-                if (propChange.isSecuritySensitive) {
-                  if (!iacChanges.includes(`SECURITY_GROUP_CHANGE: ${address}`)) {
-                    iacChanges.push(`SECURITY_GROUP_CHANGE: ${address}`);
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
+      iacChanges = result.iacChanges;
+      estimatedCostIncrease = result.estimatedCostIncrease;
     }
     
-    // Check if cost increase exceeds threshold
-    if (estimatedCostIncrease > parseFloat(costThreshold)) {
-      iacChanges.push(`COST_INCREASE: Estimated $${estimatedCostIncrease}/month`);
-    }
-    
-    // Score the changes using existing risk scorer
-    if (iacChanges.length > 0) {
-      const scoringResult = riskScorer.scoreChanges(iacChanges, 'INFRASTRUCTURE');
-      
-      return {
-        type: 'infrastructure',
-        file: terraformPath,
-        severity: scoringResult.severity,
-        changes: iacChanges,
-        reasoning: scoringResult.reasoning,
-        costImpact: estimatedCostIncrease > 0 ? `$${estimatedCostIncrease}/month` : null
-      };
-    }
+    // Use shared result builder
+    return buildIaCResult(iacChanges, terraformPath, 'INFRASTRUCTURE', costThreshold, estimatedCostIncrease, riskScorer);
   } catch (error) {
     core.warning(`Terraform plan analysis failed: ${error.message}`);
   }

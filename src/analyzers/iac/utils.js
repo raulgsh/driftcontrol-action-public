@@ -293,7 +293,7 @@ function describeArrayItem(item) {
 }
 
 // Check if a property change is security-sensitive
-function isSecuritySensitiveProperty(path, _oldValue = null, newValue = null) {
+function isSecuritySensitiveProperty(path, oldValue = null, newValue = null) {
   const sensitivePatterns = [
     /security/i,
     /cidr/i,
@@ -329,6 +329,230 @@ function isArray(val) {
   return Array.isArray(val);
 }
 
+// Generic base/head template fetching for IaC files
+async function fetchBaseAndHeadTemplates(octokit, owner, repo, filepath, pullRequest, parseFunction, contentFetcher = null) {
+  const core = require('@actions/core');
+  let headTemplate = null;
+  let baseTemplate = null;
+  let headError = null;
+  let baseError = null;
+  
+  if (contentFetcher) {
+    // Use ContentFetcher for batch fetching
+    const results = await contentFetcher.batchFetch([
+      { path: filepath, ref: pullRequest.head.sha, description: `head template ${filepath}` },
+      { path: filepath, ref: pullRequest.base.sha, description: `base template ${filepath}` }
+    ]);
+    
+    try {
+      if (results[0]) {
+        headTemplate = parseFunction(results[0].content);
+        core.info(`Parsed head template from: ${filepath}`);
+      } else {
+        headError = new Error('Not Found');
+        core.info(`No template found in head branch at ${filepath}`);
+      }
+    } catch (error) {
+      headError = error;
+      core.info(`Failed to parse head template: ${error.message}`);
+    }
+    
+    try {
+      if (results[1]) {
+        baseTemplate = parseFunction(results[1].content);
+        core.info(`Parsed base template from: ${filepath}`);
+      } else {
+        baseError = new Error('Not Found');
+        core.info(`No template found in base branch at ${filepath}`);
+      }
+    } catch (error) {
+      baseError = error;
+      core.info(`Failed to parse base template: ${error.message}`);
+    }
+  } else {
+    // Legacy method for backward compatibility
+    try {
+      const { data: headData } = await octokit.rest.repos.getContent({
+        owner,
+        repo,
+        path: filepath,
+        ref: pullRequest.head.sha
+      });
+      const headContent = Buffer.from(headData.content, 'base64').toString();
+      headTemplate = parseFunction(headContent);
+      core.info(`Parsed head template from: ${filepath}`);
+    } catch (error) {
+      headError = error;
+      core.info(`No template found in head branch at ${filepath}: ${error.message}`);
+    }
+    
+    try {
+      const { data: baseData } = await octokit.rest.repos.getContent({
+        owner,
+        repo,
+        path: filepath,
+        ref: pullRequest.base.sha
+      });
+      const baseContent = Buffer.from(baseData.content, 'base64').toString();
+      baseTemplate = parseFunction(baseContent);
+      core.info(`Parsed base template from: ${filepath}`);
+    } catch (error) {
+      baseError = error;
+      core.info(`No template found in base branch at ${filepath}: ${error.message}`);
+    }
+  }
+  
+  // If both fetches failed with actual errors (not just missing files), propagate the error
+  if (headError && baseError && headError.message !== 'Not Found' && baseError.message !== 'Not Found') {
+    throw headError; // Re-throw to trigger the warning in outer catch
+  }
+  
+  return { baseTemplate, headTemplate, headError, baseError };
+}
+
+// Build resource map from template (works for both Terraform and CloudFormation)
+function buildResourceMap(template, resourceAccessor) {
+  if (!template) return new Map();
+  
+  // Handle both function accessor and string key
+  const resources = typeof resourceAccessor === 'function' 
+    ? resourceAccessor(template)
+    : template[resourceAccessor];
+    
+  const map = new Map();
+  
+  if (!resources) return map;
+  
+  // Process resources based on type (array vs object)
+  if (Array.isArray(resources)) {
+    // Terraform style: array of resource_changes
+    resources.forEach(resource => {
+      if (resource.address) {
+        map.set(resource.address, resource);
+      }
+    });
+  } else if (typeof resources === 'object') {
+    // CloudFormation style: Resources object
+    Object.entries(resources).forEach(([logicalId, resource]) => {
+      map.set(logicalId, { ...resource, address: logicalId });
+    });
+  }
+  
+  return map;
+}
+
+// Analyze resource changes between base and head maps
+function analyzeResourceChanges(baseMap, headMap, getResourceType, isSecurityResource) {
+  const iacChanges = [];
+  let estimatedCostIncrease = 0;
+  
+  // Check for removed resources (exist in base but not in head)
+  for (const [address, baseResource] of baseMap) {
+    if (!headMap.has(address)) {
+      const resourceType = getResourceType(baseResource);
+      iacChanges.push(`RESOURCE_DELETION: ${resourceType} - ${address}`);
+      
+      // Flag security-sensitive deletions
+      if (isSecurityResource(resourceType)) {
+        iacChanges.push(`SECURITY_GROUP_DELETION: ${address}`);
+      }
+    }
+  }
+  
+  // Check for added resources and modifications
+  for (const [address, headResource] of headMap) {
+    const baseResource = baseMap.get(address);
+    const resourceType = getResourceType(headResource);
+    
+    if (!baseResource) {
+      // Resource added
+      iacChanges.push(`RESOURCE_ADDITION: ${resourceType} - ${address}`);
+      
+      // Check if this is a create action for cost estimation
+      const change = headResource.change || {};
+      const actions = change.actions || [];
+      if (actions.includes('create') || !actions.length) { // No actions means new resource in CloudFormation
+        estimatedCostIncrease += estimateResourceCost(resourceType);
+      }
+      
+      // Flag security-sensitive additions
+      if (isSecurityResource(resourceType)) {
+        iacChanges.push(`SECURITY_GROUP_ADDITION: ${address}`);
+      }
+    } else {
+      // Check for resource type change first (CloudFormation specific)
+      const baseType = getResourceType(baseResource);
+      if (baseType !== resourceType) {
+        iacChanges.push(`RESOURCE_TYPE_CHANGE: ${address} from ${baseType} to ${resourceType}`);
+      }
+      
+      // Deep comparison of resource properties
+      const change = headResource.change || {};
+      const actions = change.actions || [];
+      
+      if (actions.includes('update') || actions.includes('modify') || baseType !== resourceType) {
+        // Extract before and after states for comparison
+        const beforeState = change.before || baseResource.change?.after || baseResource.Properties || {};
+        const afterState = change.after || headResource.Properties || {};
+        
+        // Perform detailed property comparison
+        const propertyChanges = compareResourceProperties(
+          beforeState,
+          afterState,
+          address
+        );
+        
+        // Add high-level change for risk scorer compatibility
+        if (propertyChanges.length > 0 || baseType !== resourceType) {
+          iacChanges.push(`RESOURCE_MODIFICATION: ${resourceType} - ${address}`);
+          
+          // Add detailed property changes
+          for (const propChange of propertyChanges) {
+            iacChanges.push(propChange.detailed);
+            
+            // Flag security-sensitive changes
+            if (propChange.isSecuritySensitive) {
+              if (isSecurityResource(resourceType)) {
+                if (!iacChanges.includes(`SECURITY_GROUP_CHANGE: ${address}`)) {
+                  iacChanges.push(`SECURITY_GROUP_CHANGE: ${address}`);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  return { iacChanges, estimatedCostIncrease };
+}
+
+// Build final IaC result object
+function buildIaCResult(changes, filepath, scoringType, costThreshold, estimatedCostIncrease, riskScorer) {
+  const iacChanges = [...changes];
+  
+  // Check if cost increase exceeds threshold
+  if (estimatedCostIncrease > parseFloat(costThreshold)) {
+    iacChanges.push(`COST_INCREASE: Estimated $${estimatedCostIncrease}/month`);
+  }
+  
+  // Score the changes using existing risk scorer
+  if (iacChanges.length > 0) {
+    const scoringResult = riskScorer.scoreChanges(iacChanges, scoringType);
+    
+    return {
+      type: 'infrastructure',
+      file: filepath,
+      severity: scoringResult.severity,
+      changes: iacChanges,
+      reasoning: scoringResult.reasoning,
+      costImpact: estimatedCostIncrease > 0 ? `$${estimatedCostIncrease}/month` : null
+    };
+  }
+  
+  return null;
+}
+
 module.exports = {
   estimateResourceCost,
   compareResourceProperties,
@@ -337,5 +561,9 @@ module.exports = {
   describeArrayItem,
   isSecuritySensitiveProperty,
   isObject,
-  isArray
+  isArray,
+  fetchBaseAndHeadTemplates,
+  buildResourceMap,
+  analyzeResourceChanges,
+  buildIaCResult
 };
