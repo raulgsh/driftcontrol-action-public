@@ -136,11 +136,11 @@ describe('SQL Parse Module', () => {
         // Should not warn since both statements are valid
         expect(core.warning).not.toHaveBeenCalled();
         
-        // Should detect the rename
-        const hasTableRename = result.sqlChanges.some(change => 
-          change.includes('TABLE RENAME: users')
+        // Should detect the table rebuild (was previously misclassified as rename)
+        const hasTableRebuild = result.sqlChanges.some(change => 
+          change.includes('TABLE REBUILD: users')
         );
-        expect(hasTableRename).toBe(true);
+        expect(hasTableRebuild).toBe(true);
         
         // Should have 'users' in entities
         expect(result.entities).toContain('users');
@@ -287,6 +287,39 @@ describe('SQL Parse Module', () => {
           change.includes('DROP TABLE')
         );
         expect(hasDropTable).toBe(true);
+      });
+
+      test('should detect table rebuild (DROP+CREATE same table) as high severity', () => {
+        const sqlContent = `
+          DROP TABLE users;
+          CREATE TABLE users (id INT PRIMARY KEY, email VARCHAR(255));
+        `;
+        const filename = 'table_rebuild.sql';
+        
+        const result = parseSqlFile(sqlContent, filename);
+        
+        // Should detect DROP TABLE (high severity)
+        const hasDropTable = result.sqlChanges.some(change => 
+          change.includes('DROP TABLE: users')
+        );
+        expect(hasDropTable).toBe(true);
+        
+        // Should detect TABLE REBUILD (high severity)
+        const hasTableRebuild = result.sqlChanges.some(change => 
+          change.includes('TABLE REBUILD: users')
+        );
+        expect(hasTableRebuild).toBe(true);
+        
+        // Should NOT misclassify as rename
+        const hasTableRename = result.sqlChanges.some(change => 
+          change.includes('TABLE RENAME: users')
+        );
+        expect(hasTableRename).toBe(false);
+        
+        // Verify final severity assessment using actual scorer
+        const riskScorer = require('../../../scoring');
+        const scoringResult = riskScorer.scoreChanges(result.sqlChanges, 'SQL');
+        expect(scoringResult.severity).toBe('high');
       });
     });
 

@@ -241,7 +241,7 @@ describe('SqlAnalyzer', () => {
       expect(mockRiskScorer.scoreChanges).toHaveBeenCalledWith(['DROP CONSTRAINT: fk_user_role'], 'SQL');
     });
 
-    test('should detect table rename (DROP + CREATE same table)', async () => {
+    test('should detect table rebuild (DROP + CREATE same table)', async () => {
       const files = [
         { filename: 'migrations/001_rename_table.sql', status: 'added' }
       ];
@@ -269,7 +269,7 @@ describe('SqlAnalyzer', () => {
         baseParams.pullRequestHeadSha, baseParams.sqlGlob
       );
 
-      const expectedChanges = expect.arrayContaining(['TABLE RENAME: users (schema change)']);
+      const expectedChanges = expect.arrayContaining(['TABLE REBUILD: users (destructive operation - data loss)']);
       expect(mockRiskScorer.scoreChanges).toHaveBeenCalledWith(expectedChanges, 'SQL');
     });
 

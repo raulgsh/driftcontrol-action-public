@@ -92,19 +92,14 @@ function parseSqlFile(content, filename) {
     }
   }
   
-  // Smart table rename detection (DROP+CREATE same table name)
-  const renamedTables = new Set([...droppedTables].filter(table => {
-    // Ensure we're comparing strings properly
+  // CRITICAL: DROP+CREATE same table = TABLE REBUILD (destructive), not rename
+  const tableRebuilds = new Set([...droppedTables].filter(table => {
     const tableLower = typeof table === 'string' ? table.toLowerCase() : String(table).toLowerCase();
     return createdTables.has(tableLower);
   }));
-  for (const table of renamedTables) {
-    // Remove from high-severity drops if it's a rename
-    const dropIndex = sqlChanges.findIndex(change => change.includes(`DROP TABLE: ${table}`));
-    if (dropIndex !== -1) {
-      sqlChanges.splice(dropIndex, 1);
-    }
-    sqlChanges.push(`TABLE RENAME: ${table} (schema change)`);
+  for (const table of tableRebuilds) {
+    // Keep DROP TABLE for high severity, add rebuild warning
+    sqlChanges.push(`TABLE REBUILD: ${table} (destructive operation - data loss)`);
   }
   
   // Column rename heuristics
@@ -341,14 +336,14 @@ function fallbackRegexAnalysis(content, filename) {
     core.info(`Fallback found CREATE POLICY: ${policyName} on table ${tableName}`);
   }
   
-  // Smart table rename detection
-  const renamedTables = new Set([...droppedTables].filter(table => createdTables.has(table)));
-  for (const table of renamedTables) {
-    const dropIndex = sqlChanges.findIndex(change => change.includes(`DROP TABLE: ${table}`));
-    if (dropIndex !== -1) {
-      sqlChanges.splice(dropIndex, 1);
-    }
-    sqlChanges.push(`TABLE RENAME: ${table} (schema change)`);
+  // CRITICAL: DROP+CREATE same table = TABLE REBUILD (destructive), not rename
+  const tableRebuilds = new Set([...droppedTables].filter(table => {
+    const tableLower = typeof table === 'string' ? table.toLowerCase() : String(table).toLowerCase();
+    return createdTables.has(tableLower);
+  }));
+  for (const table of tableRebuilds) {
+    // Keep DROP TABLE for high severity, add rebuild warning
+    sqlChanges.push(`TABLE REBUILD: ${table} (destructive operation - data loss)`);
   }
   
   // Check for column operations

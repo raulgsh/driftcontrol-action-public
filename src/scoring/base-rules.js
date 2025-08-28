@@ -7,6 +7,7 @@ function assessHighSeverity(changeType, details) {
   const highRiskIndicators = [
     'DROP TABLE', 'DROP COLUMN', 'TRUNCATE TABLE', 'DROP CONSTRAINT',
     'DROP POLICY', 'ALTER POLICY', // RLS policy changes are high risk
+    'TABLE REBUILD', // DROP+CREATE same table = destructive data loss
     'COLUMN LOSS', 'API_DELETION', 'BREAKING_CHANGE',
     'SECURITY_GROUP_DELETION', 'RESOURCE_DELETION',
     'SECRET_KEY_REMOVED', 'SECRET_KEY_ADDED',
