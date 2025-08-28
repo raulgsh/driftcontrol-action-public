@@ -92,7 +92,7 @@ jobs:
 | `correlation_config_path` | Path to correlation configuration file | No | `.github/driftcontrol.yml` |
 | `fail_on_medium` | Block merges on medium-severity drift | No | `false` |
 | `override` | Bypass merge blocks (with audit trail) | No | `false` |
-| `vulnerability_provider` | Vulnerability detection provider (static, github) | No | `static` |
+| `vulnerability_provider` | Vulnerability detection provider (osv, github, static) | No | `static` |
 | `kubernetes_glob` | Glob pattern for Kubernetes manifest files | No | `**/k8s/**/*.{yaml,yml}` |
 | `env_files` | Analyze .env files for secret changes | No | `true` |
 
@@ -439,31 +439,65 @@ DriftControl will **NOT**:
 
 ### Dependency Security Scanning
 
-DriftControl provides **basic security checks** for a limited set of known critical vulnerabilities:
+DriftControl now provides **comprehensive security vulnerability detection** through multiple integrated databases:
 
-⚠️ **Important**: This is NOT a comprehensive security scanner. It only checks for a small, hardcoded list of known critical vulnerabilities.
+#### Vulnerability Detection Providers
 
-**What DriftControl checks (basic coverage only)**:
-- ✅ 5 known malicious packages (event-stream, flatmap-stream, eslint-scope@3.7.2, bootstrap<3.4.0, lodash<4.17.11)
-- ✅ Major version changes that might introduce breaking changes
-- ✅ Integrity mismatches in package-lock.json
-- ✅ Basic transitive dependency analysis in package-lock.json
+**🔐 OSV Database (Recommended)**
+- ✅ **Comprehensive**: Full Open Source Vulnerability database coverage
+- ✅ **Up-to-date**: Real-time vulnerability feeds from multiple sources
+- ✅ **Accurate**: Precise version range matching using semantic versioning
+- ✅ **Performance**: Batch API queries for efficiency
+- ✅ **Coverage**: Thousands of vulnerabilities across all npm packages
 
-**What DriftControl does NOT check**:
-- ❌ Full CVE database (thousands of vulnerabilities)
-- ❌ Real-time vulnerability feeds from npm advisory
-- ❌ Zero-day vulnerabilities
-- ❌ Most security vulnerabilities discovered after 2019
-- ❌ License compliance issues
-- ❌ Supply chain attacks beyond the 5 hardcoded packages
+```yaml
+- name: DriftControl with OSV Database
+  uses: raulgsh/driftcontrol-action-public@v1
+  with:
+    vulnerability_provider: 'osv'  # Comprehensive OSV database scanning
+```
 
-**For comprehensive security scanning, we strongly recommend**:
-1. **Run `npm audit`** in your CI/CD pipeline for full npm advisory coverage
-2. **Enable GitHub Dependabot** for automated security updates  
-3. **Integrate dedicated security tools** like Snyk, WhiteSource, or OWASP Dependency Check
-4. **Use `npm audit fix`** to automatically resolve vulnerabilities
+**🐙 GitHub Advisory Database**
+- ✅ **Native Integration**: Uses GitHub's Dependency Review API
+- ✅ **Repository Context**: Analyzes PR-specific dependency changes
+- ✅ **Severity Mapping**: High/Medium/Low severity classification
+- ✅ **No Rate Limits**: Integrated with GitHub ecosystem
 
-DriftControl complements these tools by providing drift-focused analysis in PR comments, but should not be your primary security scanner.
+```yaml
+- name: DriftControl with GitHub Advisory
+  uses: raulgsh/driftcontrol-action-public@v1
+  with:
+    vulnerability_provider: 'github'  # GitHub's dependency review API
+```
+
+**📋 Static List (Fallback)**
+- ⚠️ **Limited**: Only 5 known malicious packages for demonstration
+- ✅ **No Dependencies**: Works without external API calls
+- ⚠️ **Not Recommended**: Use only for testing or offline environments
+
+```yaml
+- name: DriftControl with Static List
+  uses: raulgsh/driftcontrol-action-public@v1
+  with:
+    vulnerability_provider: 'static'  # Basic hardcoded list (default)
+```
+
+#### Enhanced Security Features
+
+**What DriftControl now provides**:
+- ✅ **Full vulnerability database coverage** (OSV/GitHub providers)
+- ✅ **Real-time vulnerability detection** with semantic version matching
+- ✅ **CVSS severity scoring** (Critical/High/Medium/Low)
+- ✅ **Transitive dependency vulnerability detection**
+- ✅ **Batch processing** for performance optimization
+- ✅ **Graceful fallbacks** when APIs are unavailable
+
+**Migration Path**:
+- **Current users**: Default remains `static` for backward compatibility
+- **New deployments**: Recommended to use `osv` for comprehensive scanning
+- **GitHub Enterprise**: Use `github` provider for native integration
+
+DriftControl now provides production-ready security scanning alongside drift detection, reducing the need for additional security tools in your CI/CD pipeline.
 
 ### Infrastructure Cost Analysis
 

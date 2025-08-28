@@ -158,6 +158,195 @@ class GitHubAdvisoryProvider extends VulnerabilityProvider {
   }
 }
 
+class OSVProvider extends VulnerabilityProvider {
+  constructor() {
+    super();
+    this.vulnerabilities = new Map(); // Cache for entire PR
+    this.initialized = false;
+  }
+
+  async initialize({ packageNames = [] }) {
+    if (this.initialized) return; // Prevent duplicate calls
+    
+    try {
+      core.info('Fetching vulnerability data from OSV database...');
+      
+      if (packageNames.length === 0) {
+        core.info('No packages to query from OSV database');
+        this.initialized = true;
+        return;
+      }
+
+      // Batch query to OSV API for better performance
+      const batchQueries = packageNames.map(pkg => ({
+        package: { name: pkg, ecosystem: 'npm' }
+      }));
+
+      // Split into smaller batches to avoid API limits (100 per batch)
+      const batchSize = 100;
+      for (let i = 0; i < batchQueries.length; i += batchSize) {
+        const batch = batchQueries.slice(i, i + batchSize);
+        
+        try {
+          core.info(`Querying OSV API for batch of ${batch.length} packages...`);
+          const response = await fetch('https://api.osv.dev/v1/querybatch', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              queries: batch
+            })
+          });
+
+          if (!response.ok) {
+            throw new Error(`OSV API returned ${response.status}: ${response.statusText}`);
+          }
+
+          const data = await response.json();
+          core.info(`OSV API returned ${data.results?.length || 0} results`);
+          
+          // Process results
+          for (let j = 0; j < data.results.length; j++) {
+            const result = data.results[j];
+            const packageName = batch[j].package.name;
+            
+            if (result.vulns && result.vulns.length > 0) {
+              for (const vuln of result.vulns) {
+                // Extract affected versions
+                const affectedRanges = vuln.affected || [];
+                for (const affected of affectedRanges) {
+                  if (affected.package?.name === packageName && affected.package?.ecosystem === 'npm') {
+                    const vulnInfo = {
+                      id: vuln.id,
+                      severity: this.extractSeverity(vuln),
+                      summary: vuln.summary,
+                      affected: affected.ranges || [],
+                      database_specific: vuln.database_specific
+                    };
+                    
+                    // Store by package name for version checking
+                    const key = packageName;
+                    if (!this.vulnerabilities.has(key)) {
+                      this.vulnerabilities.set(key, []);
+                    }
+                    this.vulnerabilities.get(key).push(vulnInfo);
+                  }
+                }
+              }
+            }
+          }
+        } catch (batchError) {
+          core.warning(`OSV API batch query failed: ${batchError.message}`);
+          // Continue with next batch
+        }
+      }
+      
+      this.initialized = true;
+      core.info(`Cached vulnerabilities for ${this.vulnerabilities.size} packages from OSV database`);
+    } catch (e) {
+      core.warning(`OSV API failed: ${e.message}. Falling back to static list.`);
+      this.initialized = true; // Don't retry on failure
+    }
+  }
+
+  extractSeverity(vuln) {
+    // Check multiple severity sources in OSV format
+    if (vuln.severity && Array.isArray(vuln.severity)) {
+      for (const sev of vuln.severity) {
+        if (sev.type === 'CVSS_V3' && sev.score) {
+          // Convert CVSS score to severity level
+          const score = parseFloat(sev.score);
+          if (score >= 9.0) return 'critical';
+          if (score >= 7.0) return 'high';
+          if (score >= 4.0) return 'moderate';
+          return 'low';
+        }
+      }
+    }
+    
+    // Check database-specific severity
+    if (vuln.database_specific?.severity) {
+      return vuln.database_specific.severity.toLowerCase();
+    }
+    
+    // Default to moderate if no severity information
+    return 'moderate';
+  }
+
+  isVulnerable(packageName, version) {
+    const vulns = this.vulnerabilities.get(packageName);
+    if (!vulns) return false;
+
+    // Check if version falls within any vulnerable range
+    for (const vuln of vulns) {
+      if (this.isVersionInVulnerableRange(version, vuln.affected)) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  isVersionInVulnerableRange(version, ranges) {
+    if (!ranges || ranges.length === 0) return false;
+    
+    const cleanVersion = version.replace(/^[\^~=v]/, '');
+    
+    for (const range of ranges) {
+      if (range.type === 'SEMVER') {
+        // Handle SEMVER ranges
+        for (const event of range.events || []) {
+          if (event.introduced && event.introduced === '0' && !event.fixed) {
+            return true; // All versions vulnerable
+          }
+          
+          if (event.introduced && !event.fixed) {
+            // Version introduced and no fix yet
+            if (compareVersions(cleanVersion, event.introduced) >= 0) {
+              return true;
+            }
+          }
+          
+          if (event.introduced && event.fixed) {
+            // Vulnerable range: introduced <= version < fixed
+            if (compareVersions(cleanVersion, event.introduced) >= 0 && 
+                compareVersions(cleanVersion, event.fixed) < 0) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    
+    return false;
+  }
+  
+  getVulnerabilityInfo(packageName, version) {
+    const vulns = this.vulnerabilities.get(packageName);
+    if (!vulns) return null;
+
+    // Return vulnerabilities that affect this version
+    const affectingVulns = vulns.filter(vuln => 
+      this.isVersionInVulnerableRange(version, vuln.affected)
+    );
+    
+    return affectingVulns.length > 0 ? {
+      vulnerabilities: affectingVulns,
+      severity: this.getHighestSeverity(affectingVulns),
+      version: version
+    } : null;
+  }
+
+  getHighestSeverity(vulns) {
+    const severityOrder = ['critical', 'high', 'moderate', 'low'];
+    return vulns.reduce((highest, v) => {
+      const current = (v.severity || 'moderate').toLowerCase();
+      return severityOrder.indexOf(current) < severityOrder.indexOf(highest) ? current : highest;
+    }, 'low');
+  }
+}
+
 class StaticListProvider extends VulnerabilityProvider {
   async initialize() {
     // No initialization needed for static list
@@ -256,6 +445,7 @@ module.exports = {
   compareVersions,
   VulnerabilityProvider,
   GitHubAdvisoryProvider,
+  OSVProvider,
   StaticListProvider,
   setVulnerabilityProvider,
   isKnownVulnerablePackage
