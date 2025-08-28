@@ -211,6 +211,8 @@ class OSVProvider extends VulnerabilityProvider {
             const result = data.results[j];
             const packageName = batch[j].package.name;
             
+            core.info(`Processing result for ${packageName}: ${result.vulns?.length || 0} vulnerabilities`);
+            
             if (result.vulns && result.vulns.length > 0) {
               for (const vuln of result.vulns) {
                 // Extract affected versions
