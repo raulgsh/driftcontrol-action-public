@@ -2,7 +2,7 @@
 const walk = require('acorn-walk');
 
 // Detect API handlers in the AST
-function detectApiHandlers(ast, filename) {
+function detectApiHandlers(ast, filename, content) {
   const handlers = []; // { method: 'GET', path: '/users', file: filename, symbol: 'getUsersHandler', line: 42 }
   
   if (!ast) return handlers;
@@ -115,7 +115,7 @@ function detectApiHandlers(ast, filename) {
 }
 
 // Detect database operations in the AST
-function detectDbOperations(ast, filename) {
+function detectDbOperations(ast, filename, content) {
   const dbRefs = []; // { orm: 'prisma', table: 'users', op: 'findMany', file: filename, symbol: 'getUsersHandler', line: 42 }
   
   if (!ast) return dbRefs;

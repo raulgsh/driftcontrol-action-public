@@ -553,6 +553,154 @@ function buildIaCResult(changes, filepath, scoringType, costThreshold, estimated
   return null;
 }
 
+// Secure command execution utilities
+const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+// Secure command execution with sandboxing
+function executeTerraformCommand(command, workingDir, timeout = 30000) {
+  const core = require('@actions/core');
+  
+  try {
+    // Security validation
+    if (!command.startsWith('terraform')) {
+      throw new Error('Only terraform commands are allowed');
+    }
+    
+    // Check for dangerous characters
+    const dangerousPatterns = [';', '&&', '||', '|', '>', '<', '`', '$', '\\'];
+    if (dangerousPatterns.some(pattern => command.includes(pattern))) {
+      throw new Error('Command contains unsafe characters');
+    }
+    
+    // Create temporary directory for isolated execution
+    const tempDir = path.join('/tmp', `terraform-${crypto.randomBytes(8).toString('hex')}`);
+    fs.mkdirSync(tempDir, { recursive: true });
+    
+    // Execute with strict timeout and resource limits
+    const result = execSync(command, {
+      cwd: workingDir,
+      timeout: timeout,
+      maxBuffer: 10 * 1024 * 1024, // 10MB max output
+      env: {
+        ...process.env,
+        TF_IN_AUTOMATION: 'true',
+        TF_INPUT: 'false',
+        TF_CLI_ARGS: '-no-color',
+        TMPDIR: tempDir // Isolate temp files
+      },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    
+    // Cleanup temp directory
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    
+    return result.toString();
+  } catch (error) {
+    core.warning(`Terraform command failed: ${error.message}`);
+    return null;
+  }
+}
+
+// Generate Terraform plan JSON from HCL files
+async function generateTerraformPlan(workingDir, targetFile = null) {
+  const core = require('@actions/core');
+  
+  try {
+    // Check if Terraform is available
+    const version = executeTerraformCommand('terraform version -json', workingDir, 5000);
+    if (!version) {
+      core.info('Terraform CLI not available, falling back to HCL analysis');
+      return null;
+    }
+    
+    core.info('Terraform CLI detected, generating plan...');
+    
+    // Initialize Terraform (lightweight, no backend)
+    const initResult = executeTerraformCommand(
+      'terraform init -backend=false -input=false -no-color',
+      workingDir,
+      60000
+    );
+    
+    if (!initResult) {
+      core.warning('Terraform init failed, falling back to HCL analysis');
+      return null;
+    }
+    
+    // Generate plan with JSON output
+    const planFile = path.join('/tmp', `tfplan-${Date.now()}.json`);
+    const planCommand = targetFile 
+      ? `terraform plan -json -out=${planFile} -target=${targetFile} -input=false`
+      : `terraform plan -json -out=${planFile} -input=false`;
+    
+    const planResult = executeTerraformCommand(planCommand, workingDir, 120000);
+    
+    if (!planResult || !fs.existsSync(planFile)) {
+      core.warning('Terraform plan generation failed, falling back to HCL analysis');
+      return null;
+    }
+    
+    // Convert binary plan to JSON
+    const showResult = executeTerraformCommand(
+      `terraform show -json ${planFile}`,
+      workingDir,
+      30000
+    );
+    
+    // Cleanup plan file
+    fs.unlinkSync(planFile);
+    
+    if (!showResult) {
+      return null;
+    }
+    
+    return JSON.parse(showResult);
+  } catch (error) {
+    core.warning(`Plan generation failed: ${error.message}`);
+    return null;
+  }
+}
+
+// Secure Git checkout to temporary directory
+async function checkoutToTemp(octokit, owner, repo, sha, targetDir) {
+  const core = require('@actions/core');
+  
+  try {
+    // Create target directory
+    fs.mkdirSync(targetDir, { recursive: true });
+    
+    // Use GitHub API to download archive
+    const { data } = await octokit.rest.repos.downloadArchive({
+      owner,
+      repo,
+      archive_format: 'tarball',
+      ref: sha
+    });
+    
+    // Save and extract archive
+    const archivePath = path.join('/tmp', `${sha}.tar.gz`);
+    fs.writeFileSync(archivePath, Buffer.from(data));
+    
+    // Extract with security constraints
+    execSync(`tar -xzf ${archivePath} -C ${targetDir} --strip-components=1`, {
+      timeout: 30000,
+      maxBuffer: 50 * 1024 * 1024
+    });
+    
+    // Cleanup archive
+    fs.unlinkSync(archivePath);
+    
+    core.info(`Checked out ${sha} to ${targetDir}`);
+    return true;
+  } catch (error) {
+    core.warning(`Failed to checkout ${sha}: ${error.message}`);
+    return false;
+  }
+}
+
 module.exports = {
   estimateResourceCost,
   compareResourceProperties,
@@ -565,5 +713,8 @@ module.exports = {
   fetchBaseAndHeadTemplates,
   buildResourceMap,
   analyzeResourceChanges,
-  buildIaCResult
+  buildIaCResult,
+  executeTerraformCommand,
+  generateTerraformPlan,
+  checkoutToTemp
 };

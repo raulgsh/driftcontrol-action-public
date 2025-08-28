@@ -1,12 +1,10 @@
 // API and database detection for Java via tree-sitter AST traversal
 
 // Detect API handlers in Java (Spring Boot, JAX-RS)
-function detectApiHandlers(ast, filename) {
+function detectApiHandlers(ast, filename, content) {
   const handlers = []; // { method: 'GET', path: '/users', file: filename, symbol: 'getUsers', line: 42 }
   
   if (!ast || !ast.rootNode) return handlers;
-  
-  const content = getContent(filename);
   
   walkNode(ast.rootNode, (node) => {
     // Spring Boot annotations: @GetMapping("/users"), @PostMapping("/users")
@@ -89,13 +87,12 @@ function detectApiHandlers(ast, filename) {
 }
 
 // Detect database operations in Java (JPA, Hibernate, MyBatis)
-function detectDbOperations(ast, filename) {
+function detectDbOperations(ast, filename, content) {
   const dbRefs = []; // { orm: 'jpa', table: 'users', op: 'findById', file: filename, symbol: 'getUserById', line: 42 }
   
   if (!ast || !ast.rootNode) return dbRefs;
   
   let currentMethod = null;
-  const content = getContent(filename);
   
   walkNode(ast.rootNode, (node) => {
     // Track current method
@@ -201,6 +198,60 @@ function detectDbOperations(ast, filename) {
         }
       }
     }
+    
+    // MyBatis Mapper calls: userMapper.selectById(), userMapper.insertUser()
+    if (node.type === 'method_invocation') {
+      const object_expr = node.namedChild(0);
+      const method_name = node.namedChildren.find(child => child.type === 'identifier');
+      
+      if (object_expr && method_name && object_expr.type === 'identifier') {
+        const objectName = getNodeText(object_expr, content);
+        const methodName = getNodeText(method_name, content);
+        
+        // Check if it's a MyBatis mapper (common naming pattern)
+        if (objectName.toLowerCase().includes('mapper')) {
+          if (isMyBatisOperation(methodName)) {
+            const tableName = extractTableFromMapperName(objectName);
+            
+            dbRefs.push({
+              orm: 'mybatis',
+              table: tableName,
+              op: methodName,
+              file: filename,
+              symbol: currentMethod || 'anonymous',
+              line: node.startPosition.row + 1
+            });
+          }
+        }
+      }
+    }
+    
+    // Spring Data method calls: userService.findByEmail(), customerService.saveCustomer()
+    if (node.type === 'method_invocation') {
+      const object_expr = node.namedChild(0);
+      const method_name = node.namedChildren.find(child => child.type === 'identifier');
+      
+      if (object_expr && method_name && object_expr.type === 'identifier') {
+        const objectName = getNodeText(object_expr, content);
+        const methodName = getNodeText(method_name, content);
+        
+        // Check for Spring Data derived query methods
+        if (objectName.toLowerCase().includes('service') || objectName.toLowerCase().includes('repository')) {
+          if (isSpringDataDerivedQuery(methodName)) {
+            const tableName = extractTableFromServiceName(objectName);
+            
+            dbRefs.push({
+              orm: 'spring-data',
+              table: tableName,
+              op: methodName,
+              file: filename,
+              symbol: currentMethod || 'anonymous',
+              line: node.startPosition.row + 1
+            });
+          }
+        }
+      }
+    }
   });
   
   return dbRefs;
@@ -281,9 +332,38 @@ function isEntityManagerMethod(methodName) {
   return ['persist', 'merge', 'remove', 'find', 'refresh', 'detach', 'contains', 'flush', 'clear'].includes(methodName);
 }
 
+function isMyBatisOperation(methodName) {
+  const patterns = [
+    /^select/, /^insert/, /^update/, /^delete/, /^get/, /^find/,
+    /^create/, /^save/, /^remove/, /^list/, /^count/
+  ];
+  return patterns.some(pattern => pattern.test(methodName));
+}
+
+function isSpringDataDerivedQuery(methodName) {
+  const patterns = [
+    /^find/, /^get/, /^read/, /^query/, /^stream/, /^count/,
+    /^exists/, /^delete/, /^save/, /^create/, /^update/,
+    /By[A-Z]/, /OrderBy/, /And/, /Or/  // Spring Data query derivation patterns
+  ];
+  return patterns.some(pattern => pattern.test(methodName));
+}
+
 function extractTableFromRepositoryName(repoName) {
   // Convert userRepository -> user, CustomerRepo -> customer
   const cleaned = repoName.replace(/(Repository|Repo)$/i, '');
+  return camelToSnake(cleaned);
+}
+
+function extractTableFromMapperName(mapperName) {
+  // Convert userMapper -> user, CustomerMapper -> customer
+  const cleaned = mapperName.replace(/Mapper$/i, '');
+  return camelToSnake(cleaned);
+}
+
+function extractTableFromServiceName(serviceName) {
+  // Convert userService -> user, CustomerService -> customer
+  const cleaned = serviceName.replace(/(Service|Repository)$/i, '');
   return camelToSnake(cleaned);
 }
 

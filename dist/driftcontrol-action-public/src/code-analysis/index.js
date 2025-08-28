@@ -93,14 +93,14 @@ async function analyzeChangedFiles({ files, changedOnly = true, depth = 2 }) {
       if (!ast) continue;
       
       // Extract API handlers
-      const fileHandlers = adapter.detectApiHandlers(ast, file.filename);
+      const fileHandlers = adapter.detectApiHandlers(ast, file.filename, fileContent);
       
       // Extract DB operations
-      const fileDbRefs = adapter.detectDbOperations(ast, file.filename);
+      const fileDbRefs = adapter.detectDbOperations(ast, file.filename, fileContent);
       
       // Extract function calls for call graph
-      const fileCalls = adapter.extractCalls(ast);
-      const imports = adapter.extractImportsExports(ast, file.filename);
+      const fileCalls = adapter.extractCalls(ast, fileContent);
+      const imports = adapter.extractImportsExports(ast, file.filename, fileContent);
       
       // Build cross-file call edges (simplified for v1)
       const crossFileCalls = buildCrossFileCalls(fileCalls, imports, file.filename);

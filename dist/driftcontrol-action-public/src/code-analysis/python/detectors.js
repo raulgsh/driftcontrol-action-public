@@ -1,14 +1,14 @@
 // API and database detection for Python via tree-sitter AST traversal
 
 // Detect API handlers in Python (Flask, FastAPI, Django)
-function detectApiHandlers(ast, filename) {
+function detectApiHandlers(ast, filename, content) {
   const handlers = []; // { method: 'GET', path: '/users', file: filename, symbol: 'get_users', line: 42 }
   
   if (!ast || !ast.rootNode) return handlers;
   
   let currentFunction = null;
   
-  walkNode(ast.rootNode, (node, content) => {
+  walkNode(ast.rootNode, (node) => {
     // Track current function
     if (node.type === 'function_definition') {
       const name_node = node.namedChildren.find(child => child.type === 'identifier');
@@ -88,19 +88,18 @@ function detectApiHandlers(ast, filename) {
         }
       }
     }
-  }, getContent(filename));
+  });
   
   return handlers;
 }
 
 // Detect database operations in Python (SQLAlchemy, Django ORM)
-function detectDbOperations(ast, filename) {
+function detectDbOperations(ast, filename, content) {
   const dbRefs = []; // { orm: 'sqlalchemy', table: 'users', op: 'query', file: filename, symbol: 'get_users', line: 42 }
   
   if (!ast || !ast.rootNode) return dbRefs;
   
   let currentFunction = null;
-  const content = getContent(filename);
   
   walkNode(ast.rootNode, (node) => {
     // Track current function
@@ -179,6 +178,46 @@ function detectDbOperations(ast, filename) {
         }
       }
     }
+    
+    // Peewee ORM patterns: User.select().where(), User.get(), User.create()
+    if (node.type === 'call') {
+      const function_node = node.namedChild(0);
+      
+      // Direct model operations: User.get(), User.create()
+      if (function_node && function_node.type === 'attribute') {
+        const attr_chain = extractAttributeChain(function_node, content);
+        const peewee_direct_match = attr_chain.match(/^(\w+)\.(\w+)$/);
+        if (peewee_direct_match) {
+          const [, model, operation] = peewee_direct_match;
+          if (isPeeweeOperation(operation) && isCapitalized(model)) {
+            dbRefs.push({
+              orm: 'peewee',
+              table: camelToSnake(model),
+              op: operation,
+              file: filename,
+              symbol: currentFunction || 'anonymous',
+              line: node.startPosition.row + 1
+            });
+          }
+        }
+        
+        // Chained operations: User.select().where()
+        const peewee_chain_match = attr_chain.match(/^(\w+)\.select\.(\w+)/);
+        if (peewee_chain_match) {
+          const [, model, operation] = peewee_chain_match;
+          if (['where', 'limit', 'order_by', 'join'].includes(operation)) {
+            dbRefs.push({
+              orm: 'peewee',
+              table: camelToSnake(model),
+              op: 'select',
+              file: filename,
+              symbol: currentFunction || 'anonymous',
+              line: node.startPosition.row + 1
+            });
+          }
+        }
+      }
+    }
   });
   
   return dbRefs;
@@ -197,8 +236,8 @@ function getNodeText(node, sourceText) {
 }
 
 function getContent(filename) {
-  // In a real implementation, this would get the file content
-  // For now, return empty string - content will be passed from main orchestrator
+  // Content is passed from the main orchestrator via the content parameter
+  // This function is kept for compatibility but shouldn't be used
   return '';
 }
 
@@ -268,6 +307,14 @@ function isSQLAlchemyOperation(operation) {
 
 function isDjangoOperation(operation) {
   return ['filter', 'get', 'create', 'update', 'delete', 'all', 'first', 'count', 'exists'].includes(operation);
+}
+
+function isPeeweeOperation(operation) {
+  return ['select', 'insert', 'update', 'delete', 'get', 'get_or_create', 'create', 'save'].includes(operation);
+}
+
+function isCapitalized(str) {
+  return str && str.charAt(0) === str.charAt(0).toUpperCase();
 }
 
 function camelToSnake(str) {

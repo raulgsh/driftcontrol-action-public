@@ -105,13 +105,51 @@ async function run() {
     // ConfigAnalyzer already initialized above for config loading
     configAnalyzer.contentFetcher = contentFetcher;
     
+    // Extract package names for OSV provider if needed
+    let packageNames = [];
+    if (vulnerabilityProvider === 'osv') {
+      // Extract package names from package.json files in the PR
+      const packageJsonFiles = files.filter(f => f.filename.endsWith('package.json') && !f.filename.includes('node_modules'));
+      
+      for (const file of packageJsonFiles) {
+        try {
+          const { data: packageData } = await octokit.rest.repos.getContent({
+            owner,
+            repo,
+            path: file.filename,
+            ref: context.payload.pull_request.head.sha
+          });
+          
+          const packageContent = Buffer.from(packageData.content, 'base64').toString();
+          const packageJson = JSON.parse(packageContent);
+          
+          // Extract all dependencies
+          const deps = {
+            ...packageJson.dependencies,
+            ...packageJson.devDependencies,
+            ...packageJson.peerDependencies,
+            ...packageJson.optionalDependencies
+          };
+          
+          packageNames.push(...Object.keys(deps));
+        } catch (error) {
+          core.warning(`Failed to parse package.json ${file.filename}: ${error.message}`);
+        }
+      }
+      
+      // Remove duplicates
+      packageNames = [...new Set(packageNames)];
+      core.info(`Extracted ${packageNames.length} unique package names for OSV scanning`);
+    }
+
     // Initialize vulnerability provider before analysis
     await configAnalyzer.initializeVulnerabilityProvider(octokit, {
       provider: vulnerabilityProvider,
       owner: context.repo.owner,
       repo: context.repo.repo,
       baseSha: context.payload.pull_request.base.sha,
-      headSha: context.payload.pull_request.head.sha
+      headSha: context.payload.pull_request.head.sha,
+      packageNames: packageNames
     });
     
     

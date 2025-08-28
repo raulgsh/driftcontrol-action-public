@@ -298,9 +298,18 @@ class ConfigAnalyzer {
   }
 
   async initializeVulnerabilityProvider(octokit, config = {}) {
-    const { provider = 'static', owner, repo, baseSha, headSha } = config;
+    const { provider = 'static', owner, repo, baseSha, headSha, packageNames } = config;
     
-    if (provider === 'github' && octokit) {
+    if (provider === 'osv') {
+      const { OSVProvider, setVulnerabilityProvider } = require('./utils');
+      this.vulnerabilityProvider = new OSVProvider();
+      
+      // Initialize with package names from PR context
+      await this.vulnerabilityProvider.initialize({ packageNames: packageNames || [] });
+      
+      setVulnerabilityProvider(this.vulnerabilityProvider);
+      core.info('Using OSV vulnerability database for comprehensive security scanning');
+    } else if (provider === 'github' && octokit) {
       const { GitHubAdvisoryProvider, setVulnerabilityProvider } = require('./utils');
       this.vulnerabilityProvider = new GitHubAdvisoryProvider(octokit);
       
@@ -600,26 +609,6 @@ class ConfigAnalyzer {
     };
   }
 
-  async initializeVulnerabilityProvider(octokit, config = {}) {
-    const { provider = 'static', owner, repo, baseSha, headSha } = config;
-    
-    if (provider === 'github' && octokit) {
-      const { GitHubAdvisoryProvider, setVulnerabilityProvider } = require('./utils');
-      this.vulnerabilityProvider = new GitHubAdvisoryProvider(octokit);
-      
-      // Critical: Initialize ONCE with PR context
-      await this.vulnerabilityProvider.initialize({ owner, repo, baseSha, headSha });
-      
-      setVulnerabilityProvider(this.vulnerabilityProvider);
-      core.info('Using GitHub Advisory Database for vulnerability detection');
-    } else {
-      const { StaticListProvider, setVulnerabilityProvider } = require('./utils');
-      this.vulnerabilityProvider = new StaticListProvider();
-      await this.vulnerabilityProvider.initialize();
-      setVulnerabilityProvider(this.vulnerabilityProvider);
-      core.info('Using static vulnerability list (fallback)');
-    }
-  }
 }
 
 module.exports = ConfigAnalyzer;

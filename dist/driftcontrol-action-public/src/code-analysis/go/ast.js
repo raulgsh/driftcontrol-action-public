@@ -29,13 +29,11 @@ function parseFile(content, filename) {
 }
 
 // Extract imports for call graph
-function extractImportsExports(ast, filename) {
+function extractImportsExports(ast, filename, content) {
   const imports = []; // { local: 'foo', source: 'github.com/foo/bar', imported: 'foo' }
   const exports = []; // Track exported functions/types
   
   if (!ast) return { imports, exports, requires: [] };
-  
-  const content = getContent(filename);
   
   walkNode(ast.rootNode, (node) => {
     // import "package"
