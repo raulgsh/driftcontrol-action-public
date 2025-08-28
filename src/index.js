@@ -148,9 +148,9 @@ async function run() {
           files, octokit, owner, repo, context.payload.pull_request,
           configYamlGlob, featureFlagsPath
         ).then(async (configResults) => {
-          // Handle package-lock files within the same promise chain
+          // Handle package-lock files within the same promise chain with resilient handling
           const packageLockFiles = files.filter(f => f.filename.endsWith('package-lock.json'));
-          const lockResults = await Promise.all(
+          const lockSettledResults = await Promise.allSettled(
             packageLockFiles.map(file => 
               configAnalyzer.analyzePackageLock(
                 octokit, owner, repo, context.payload.pull_request.head.sha, 
@@ -158,6 +158,17 @@ async function run() {
               )
             )
           );
+          
+          // Process settled package-lock results
+          const lockResults = [];
+          for (const settledResult of lockSettledResults) {
+            if (settledResult.status === 'fulfilled') {
+              lockResults.push(settledResult.value);
+            } else {
+              core.warning(`Package-lock analysis failed for file: ${settledResult.reason?.message || 'Unknown error'}`);
+              lockResults.push(null); // Maintain existing null handling
+            }
+          }
           
           // Merge lock results with config results
           const validLockResults = lockResults.filter(r => r !== null);
@@ -174,10 +185,22 @@ async function run() {
     
     core.info(`Executing ${analysisPromises.length} analyzers in parallel...`);
     
-    // Execute all analyses in parallel
-    const allResults = await Promise.all(analysisPromises);
+    // Execute all analyses in parallel with resilient handling
+    const allSettledResults = await Promise.allSettled(analysisPromises);
     
-    core.info('All analyzers completed. Processing results...');
+    // Process settled results - continue even if some analyzers fail
+    const allResults = [];
+    for (const settledResult of allSettledResults) {
+      if (settledResult.status === 'fulfilled') {
+        allResults.push(settledResult.value);
+      } else {
+        core.warning(`Analyzer failed: ${settledResult.reason?.message || 'Unknown error'}`);
+        // Push empty result to maintain structure and allow other analyzers to continue
+        allResults.push({ driftResults: [], hasHighSeverity: false, hasMediumSeverity: false });
+      }
+    }
+    
+    core.info(`Analyzers completed: ${allResults.length} total, ${allSettledResults.filter(r => r.status === 'fulfilled').length} successful. Processing results...`);
     
     // Process all results
     for (const result of allResults) {
