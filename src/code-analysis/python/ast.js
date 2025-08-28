@@ -29,7 +29,7 @@ function parseFile(content, filename) {
 }
 
 // Extract imports for call graph
-function extractImportsExports(ast, filename) {
+function extractImportsExports(ast, filename, content) {
   const imports = []; // { local: 'foo', source: 'bar', imported: 'foo' }
   const exports = []; // Python doesn't have explicit exports, track __all__ or module-level definitions
   

@@ -1,12 +1,10 @@
 // API and database detection for Go via tree-sitter AST traversal
 
 // Detect API handlers in Go (Gin, Echo, Gorilla/Mux)
-function detectApiHandlers(ast, filename) {
+function detectApiHandlers(ast, filename, content) {
   const handlers = []; // { method: 'GET', path: '/users', file: filename, symbol: 'GetUsers', line: 42 }
   
   if (!ast || !ast.rootNode) return handlers;
-  
-  const content = getContent(filename);
   
   walkNode(ast.rootNode, (node) => {
     // Gin patterns: r.GET("/users/:id", handler)
@@ -140,13 +138,12 @@ function detectApiHandlers(ast, filename) {
 }
 
 // Detect database operations in Go (GORM, sqlx)
-function detectDbOperations(ast, filename) {
+function detectDbOperations(ast, filename, content) {
   const dbRefs = []; // { orm: 'gorm', table: 'users', op: 'Find', file: filename, symbol: 'GetUsers', line: 42 }
   
   if (!ast || !ast.rootNode) return dbRefs;
   
   let currentFunction = null;
-  const content = getContent(filename);
   
   walkNode(ast.rootNode, (node) => {
     // Track current function
@@ -225,6 +222,48 @@ function detectDbOperations(ast, filename) {
                     line: node.startPosition.row + 1
                   });
                 });
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    // database/sql patterns: rows, err := db.Query(), db.QueryRow()
+    if (node.type === 'call_expression') {
+      const function_node = node.namedChild(0);
+      
+      if (function_node && function_node.type === 'selector_expression') {
+        const method_node = function_node.namedChildren.find(child => child.type === 'field_identifier');
+        if (method_node) {
+          const operation = getNodeText(method_node, content);
+          
+          // Check for standard library database operations
+          if (isSQLOperation(operation)) {
+            const obj_node = function_node.namedChild(0);
+            if (obj_node && obj_node.type === 'identifier') {
+              const obj_name = getNodeText(obj_node, content);
+              // Common database connection variable names
+              if (['db', 'conn', 'connection', 'database'].includes(obj_name.toLowerCase())) {
+                const args = node.namedChildren.filter(child => child.type === 'argument_list')[0];
+                if (args && args.namedChildCount > 0) {
+                  const sql_arg = args.namedChild(0);
+                  if (sql_arg && sql_arg.type === 'interpreted_string_literal') {
+                    const sql = getNodeText(sql_arg, content).replace(/"/g, '');
+                    const tables = extractTablesFromSQL(sql);
+                    
+                    tables.forEach(({ table, sqlOp }) => {
+                      dbRefs.push({
+                        orm: 'database/sql',
+                        table: table,
+                        op: sqlOp,
+                        file: filename,
+                        symbol: currentFunction || 'anonymous',
+                        line: node.startPosition.row + 1
+                      });
+                    });
+                  }
+                }
               }
             }
           }

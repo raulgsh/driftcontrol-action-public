@@ -29,7 +29,7 @@ function parseFile(content, filename) {
 }
 
 // Extract imports and exports for call graph
-function extractImportsExports(ast, filename) {
+function extractImportsExports(ast, filename, content) {
   const imports = []; // { local: 'foo', source: './bar', imported: 'default' }
   const exports = []; // { local: 'foo', exported: 'foo' }
   const requires = []; // { local: 'foo', source: './bar' }
@@ -165,7 +165,7 @@ function extractFunctions(ast) {
 }
 
 // Extract function calls for building call graph
-function extractCalls(ast) {
+function extractCalls(ast, content) {
   const calls = []; // { caller: 'foo', callee: 'bar', line: 42, args: 2 }
   
   if (!ast) return calls;

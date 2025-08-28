@@ -29,13 +29,11 @@ function parseFile(content, filename) {
 }
 
 // Extract imports for call graph
-function extractImportsExports(ast, filename) {
+function extractImportsExports(ast, filename, content) {
   const imports = []; // { local: 'List', source: 'java.util.List', imported: 'List' }
   const exports = []; // Track public classes/methods
   
   if (!ast) return { imports, exports, requires: [] };
-  
-  const content = getContent(filename);
   
   walkNode(ast.rootNode, (node) => {
     // import statements
