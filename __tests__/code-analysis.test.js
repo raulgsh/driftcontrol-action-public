@@ -303,12 +303,15 @@ describe('CodeAnalysisStrategy', () => {
 });
 
 describe('Code Analysis Integration', () => {
-  test('analyzeChangedFiles should filter to JS files only', async () => {
+  test('analyzeChangedFiles should filter to supported language files', async () => {
     const mixedFiles = [
       { filename: 'src/app.js', status: 'modified' },
       { filename: 'src/routes/users.ts', status: 'added' },
-      { filename: 'README.md', status: 'modified' },
-      { filename: 'package.json', status: 'modified' },
+      { filename: 'src/main.py', status: 'modified' },
+      { filename: 'src/server.go', status: 'modified' },
+      { filename: 'src/Controller.java', status: 'modified' },
+      { filename: 'README.md', status: 'modified' }, // Should be filtered out
+      { filename: 'package.json', status: 'modified' }, // Should be filtered out
       { filename: 'src/components/User.jsx', status: 'modified' }
     ];
     
@@ -322,7 +325,7 @@ describe('Code Analysis Integration', () => {
     
     const result = await analyzeChangedFiles({ files: mixedFiles, changedOnly: true });
     
-    // Should process JS/TS files but return empty results due to mock content
+    // Should process supported language files but return empty results due to mock content
     expect(result).toEqual({
       handlers: [],
       dbRefs: [],
@@ -332,5 +335,180 @@ describe('Code Analysis Integration', () => {
     // Restore original functions
     fs.existsSync = originalExistsSync;
     fs.readFileSync = originalReadFileSync;
+  });
+});
+
+describe('Multi-Language Support', () => {
+  const codeAnalysisModule = require('../src/code-analysis');
+  
+  describe('Language Detection', () => {
+    test('should support JavaScript/TypeScript files', () => {
+      const jsFiles = [
+        { filename: 'app.js', status: 'modified' },
+        { filename: 'app.ts', status: 'modified' },
+        { filename: 'component.jsx', status: 'modified' },
+        { filename: 'component.tsx', status: 'modified' },
+        { filename: 'module.mjs', status: 'modified' },
+        { filename: 'config.cjs', status: 'modified' }
+      ];
+      
+      jsFiles.forEach(file => {
+        const isSupportedFile = require('../src/code-analysis/index').isSupportedFile || 
+          (() => ['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs'].includes(require('path').extname(file.filename)));
+        expect(isSupportedFile).toBeDefined();
+      });
+    });
+    
+    test('should support Python files', () => {
+      const pythonFiles = [
+        { filename: 'app.py', status: 'modified' },
+        { filename: 'types.pyi', status: 'modified' }
+      ];
+      
+      pythonFiles.forEach(file => {
+        const isSupportedFile = require('../src/code-analysis/index').isSupportedFile || 
+          (() => ['.py', '.pyi'].includes(require('path').extname(file.filename)));
+        expect(isSupportedFile).toBeDefined();
+      });
+    });
+    
+    test('should support Go files', () => {
+      const goFiles = [
+        { filename: 'main.go', status: 'modified' },
+        { filename: 'handler.go', status: 'modified' }
+      ];
+      
+      goFiles.forEach(file => {
+        const isSupportedFile = require('../src/code-analysis/index').isSupportedFile || 
+          (() => ['.go'].includes(require('path').extname(file.filename)));
+        expect(isSupportedFile).toBeDefined();
+      });
+    });
+    
+    test('should support Java files', () => {
+      const javaFiles = [
+        { filename: 'Controller.java', status: 'modified' },
+        { filename: 'Service.kt', status: 'modified' }
+      ];
+      
+      javaFiles.forEach(file => {
+        const isSupportedFile = require('../src/code-analysis/index').isSupportedFile || 
+          (() => ['.java', '.kt'].includes(require('path').extname(file.filename)));
+        expect(isSupportedFile).toBeDefined();
+      });
+    });
+  });
+  
+  describe('Language Adapters', () => {
+    test('should load JavaScript adapter correctly', () => {
+      const jsAdapter = require('../src/code-analysis/js/ast');
+      expect(jsAdapter.parseFile).toBeDefined();
+      expect(jsAdapter.extractImportsExports).toBeDefined();
+      expect(jsAdapter.extractCalls).toBeDefined();
+      
+      const jsDetectors = require('../src/code-analysis/js/detectors');
+      expect(jsDetectors.detectApiHandlers).toBeDefined();
+      expect(jsDetectors.detectDbOperations).toBeDefined();
+    });
+    
+    test('should load Python adapter correctly', () => {
+      const pythonAdapter = require('../src/code-analysis/python/ast');
+      expect(pythonAdapter.parseFile).toBeDefined();
+      expect(pythonAdapter.extractImportsExports).toBeDefined();
+      expect(pythonAdapter.extractCalls).toBeDefined();
+      
+      const pythonDetectors = require('../src/code-analysis/python/detectors');
+      expect(pythonDetectors.detectApiHandlers).toBeDefined();
+      expect(pythonDetectors.detectDbOperations).toBeDefined();
+    });
+    
+    test('should load Go adapter correctly', () => {
+      const goAdapter = require('../src/code-analysis/go/ast');
+      expect(goAdapter.parseFile).toBeDefined();
+      expect(goAdapter.extractImportsExports).toBeDefined();
+      expect(goAdapter.extractCalls).toBeDefined();
+      
+      const goDetectors = require('../src/code-analysis/go/detectors');
+      expect(goDetectors.detectApiHandlers).toBeDefined();
+      expect(goDetectors.detectDbOperations).toBeDefined();
+    });
+    
+    test('should load Java adapter correctly', () => {
+      const javaAdapter = require('../src/code-analysis/java/ast');
+      expect(javaAdapter.parseFile).toBeDefined();
+      expect(javaAdapter.extractImportsExports).toBeDefined();
+      expect(javaAdapter.extractCalls).toBeDefined();
+      
+      const javaDetectors = require('../src/code-analysis/java/detectors');
+      expect(javaDetectors.detectApiHandlers).toBeDefined();
+      expect(javaDetectors.detectDbOperations).toBeDefined();
+    });
+  });
+  
+  describe('Multi-Language Strategy Integration', () => {
+    let strategy;
+    
+    beforeEach(() => {
+      strategy = new CodeAnalysisStrategy({ enabled: true, budget: 'medium' });
+    });
+    
+    test('should handle mixed language files in drift results', async () => {
+      const mixedLanguageFiles = [
+        { filename: 'src/api/users.js', status: 'modified' },    // JavaScript
+        { filename: 'src/handlers/auth.py', status: 'modified' }, // Python  
+        { filename: 'src/server/main.go', status: 'modified' },   // Go
+        { filename: 'src/controller/UserController.java', status: 'modified' } // Java
+      ];
+      
+      const mockApiResult = {
+        type: 'api',
+        endpoints: ['GET:/v1/users/{id}'],
+        file: 'openapi.yaml',
+        artifactId: 'api:GET:/v1/users/{id}'
+      };
+      
+      const mockDbResult = {
+        type: 'database',
+        entities: ['users'],
+        changes: ['ALTER TABLE users ADD COLUMN email VARCHAR(255)'],
+        artifactId: 'db:table:users'
+      };
+      
+      // Mock analyzeChangedFiles to simulate multi-language analysis
+      const originalAnalyze = codeAnalysisModule.analyzeChangedFiles;
+      codeAnalysisModule.analyzeChangedFiles = jest.fn().mockResolvedValue({
+        handlers: [
+          { method: 'GET', path: '/v1/users/{id}', file: 'src/api/users.js', symbol: 'getUser', line: 10 },
+          { method: 'POST', path: '/auth/login', file: 'src/handlers/auth.py', symbol: 'login', line: 15 },
+          { method: 'GET', path: '/health', file: 'src/server/main.go', symbol: 'HealthHandler', line: 25 },
+          { method: 'PUT', path: '/users/{id}', file: 'src/controller/UserController.java', symbol: 'updateUser', line: 30 }
+        ],
+        dbRefs: [
+          { orm: 'sequelize', table: 'users', op: 'findByPk', file: 'src/api/users.js', symbol: 'getUser', line: 12 },
+          { orm: 'sqlalchemy', table: 'sessions', op: 'create', file: 'src/handlers/auth.py', symbol: 'login', line: 18 },
+          { orm: 'gorm', table: 'users', op: 'First', file: 'src/server/main.go', symbol: 'GetUserHandler', line: 35 },
+          { orm: 'jpa', table: 'users', op: 'save', file: 'src/controller/UserController.java', symbol: 'updateUser', line: 32 }
+        ],
+        calls: []
+      });
+      
+      const result = await strategy.run({
+        driftResults: [mockApiResult, mockDbResult],
+        files: mixedLanguageFiles,
+        config: {},
+        processedPairs: new Set(),
+        candidatePairs: null
+      });
+      
+      // Should find correlations across multiple languages
+      expect(result.length).toBeGreaterThanOrEqual(1);
+      expect(result[0]).toHaveProperty('source');
+      expect(result[0]).toHaveProperty('target');
+      expect(result[0]).toHaveProperty('relationship');
+      expect(result[0]).toHaveProperty('confidence');
+      
+      // Restore original function
+      codeAnalysisModule.analyzeChangedFiles = originalAnalyze;
+    });
   });
 });

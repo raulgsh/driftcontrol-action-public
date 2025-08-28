@@ -1,8 +1,47 @@
 // Main code analysis orchestrator
 const fs = require('fs');
 const path = require('path');
-const { parseFile, extractImportsExports, extractFunctions, extractCalls } = require('./js/ast');
-const { detectApiHandlers, detectDbOperations } = require('./js/detectors');
+
+// Language adapters
+const jsAdapter = {
+  parseFile: require('./js/ast').parseFile,
+  extractImportsExports: require('./js/ast').extractImportsExports,
+  extractCalls: require('./js/ast').extractCalls,
+  detectApiHandlers: require('./js/detectors').detectApiHandlers,
+  detectDbOperations: require('./js/detectors').detectDbOperations
+};
+
+const pythonAdapter = {
+  parseFile: require('./python/ast').parseFile,
+  extractImportsExports: require('./python/ast').extractImportsExports,
+  extractCalls: require('./python/ast').extractCalls,
+  detectApiHandlers: require('./python/detectors').detectApiHandlers,
+  detectDbOperations: require('./python/detectors').detectDbOperations
+};
+
+const goAdapter = {
+  parseFile: require('./go/ast').parseFile,
+  extractImportsExports: require('./go/ast').extractImportsExports,
+  extractCalls: require('./go/ast').extractCalls,
+  detectApiHandlers: require('./go/detectors').detectApiHandlers,
+  detectDbOperations: require('./go/detectors').detectDbOperations
+};
+
+const javaAdapter = {
+  parseFile: require('./java/ast').parseFile,
+  extractImportsExports: require('./java/ast').extractImportsExports,
+  extractCalls: require('./java/ast').extractCalls,
+  detectApiHandlers: require('./java/detectors').detectApiHandlers,
+  detectDbOperations: require('./java/detectors').detectDbOperations
+};
+
+// Language adapter mapping
+const languageAdapters = {
+  'javascript': jsAdapter,
+  'python': pythonAdapter,
+  'go': goAdapter,
+  'java': javaAdapter
+};
 
 // File cache to avoid re-parsing unchanged files
 const fileCache = new Map(); // filepath -> { hash, ast, handlers, dbRefs, calls }
@@ -13,18 +52,18 @@ async function analyzeChangedFiles({ files, changedOnly = true, depth = 2 }) {
   const dbRefs = [];   // DbRef[]
   const calls = [];    // CallEdge[]
   
-  // Filter to JS/TS files only
-  const jsFiles = files.filter(file => 
-    isJavaScriptFile(file.filename) && 
+  // Filter to supported language files only
+  const supportedFiles = files.filter(file => 
+    isSupportedFile(file.filename) && 
     (!changedOnly || ['added', 'modified'].includes(file.status))
   );
   
-  if (jsFiles.length === 0) {
+  if (supportedFiles.length === 0) {
     return { handlers, dbRefs, calls };
   }
   
   // Process each file
-  for (const file of jsFiles) {
+  for (const file of supportedFiles) {
     try {
       const fileContent = await readFileContent(file.filename);
       if (!fileContent) continue;
@@ -41,19 +80,27 @@ async function analyzeChangedFiles({ files, changedOnly = true, depth = 2 }) {
         continue;
       }
       
-      // Parse and analyze
-      const ast = parseFile(fileContent, file.filename);
+      // Get language adapter for this file
+      const language = getFileLanguage(file.filename);
+      const adapter = languageAdapters[language];
+      if (!adapter) {
+        console.warn(`No adapter available for language: ${language}`);
+        continue;
+      }
+      
+      // Parse and analyze using appropriate language adapter
+      const ast = adapter.parseFile(fileContent, file.filename);
       if (!ast) continue;
       
       // Extract API handlers
-      const fileHandlers = detectApiHandlers(ast, file.filename);
+      const fileHandlers = adapter.detectApiHandlers(ast, file.filename);
       
       // Extract DB operations
-      const fileDbRefs = detectDbOperations(ast, file.filename);
+      const fileDbRefs = adapter.detectDbOperations(ast, file.filename);
       
       // Extract function calls for call graph
-      const fileCalls = extractCalls(ast);
-      const imports = extractImportsExports(ast, file.filename);
+      const fileCalls = adapter.extractCalls(ast);
+      const imports = adapter.extractImportsExports(ast, file.filename);
       
       // Build cross-file call edges (simplified for v1)
       const crossFileCalls = buildCrossFileCalls(fileCalls, imports, file.filename);
@@ -80,10 +127,32 @@ async function analyzeChangedFiles({ files, changedOnly = true, depth = 2 }) {
   return { handlers, dbRefs, calls };
 }
 
-// Helper: Check if file is JavaScript/TypeScript
-function isJavaScriptFile(filename) {
+// Helper: Check if file is supported for code analysis
+function isSupportedFile(filename) {
   const ext = path.extname(filename).toLowerCase();
-  return ['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs'].includes(ext);
+  return [
+    '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', // JavaScript/TypeScript
+    '.py', '.pyi', // Python
+    '.go', // Go
+    '.java', '.kt' // Java/Kotlin
+  ].includes(ext);
+}
+
+// Helper: Determine language from file extension
+function getFileLanguage(filename) {
+  const ext = path.extname(filename).toLowerCase();
+  
+  if (['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs'].includes(ext)) {
+    return 'javascript';
+  } else if (['.py', '.pyi'].includes(ext)) {
+    return 'python';
+  } else if (['.go'].includes(ext)) {
+    return 'go';
+  } else if (['.java', '.kt'].includes(ext)) {
+    return 'java';
+  }
+  
+  return 'unknown';
 }
 
 // Helper: Read file content (in GitHub Action context, files might need to be fetched)
