@@ -1,14 +1,15 @@
 const core = require('@actions/core');
 const riskScorer = require('../../risk-scorer');
-const { detectSpecRenames, loadSpec } = require('./io');
+const { detectSpecRenames, loadSpec, loadSpecWithFetcher } = require('./io');
 const { compareSpecs } = require('./diff');
 
 /**
  * Main OpenAPI Analyzer class
  */
 class OpenApiAnalyzer {
-  constructor() {
+  constructor(contentFetcher = null) {
     this.riskScorer = riskScorer;
+    this.contentFetcher = contentFetcher;
   }
 
   // Detect OpenAPI spec file renames (add+delete pair per CLAUDE.md:55)
@@ -24,15 +25,28 @@ class OpenApiAnalyzer {
     try {
       core.info(`Checking OpenAPI spec at: ${actualOpenApiPath}`);
       
-      // Load base and head specs
+      // Use ContentFetcher if available, otherwise fallback to legacy method
       const baseSpecPath = renamedFromPath || actualOpenApiPath;
-      const { spec: baseSpec, rawContent: baseSpecRaw } = await loadSpec(
-        octokit, owner, repo, baseSpecPath, pullRequest.base.sha, 'base'
-      );
+      let baseSpec, baseSpecRaw, headSpec, headSpecRaw;
       
-      const { spec: headSpec, rawContent: headSpecRaw } = await loadSpec(
-        octokit, owner, repo, actualOpenApiPath, pullRequest.head.sha, 'head'
-      );
+      if (this.contentFetcher) {
+        const results = await Promise.all([
+          loadSpecWithFetcher(this.contentFetcher, baseSpecPath, pullRequest.base.sha, 'base'),
+          loadSpecWithFetcher(this.contentFetcher, actualOpenApiPath, pullRequest.head.sha, 'head')
+        ]);
+        
+        ({ spec: baseSpec, rawContent: baseSpecRaw } = results[0]);
+        ({ spec: headSpec, rawContent: headSpecRaw } = results[1]);
+      } else {
+        // Legacy method for backward compatibility
+        ({ spec: baseSpec, rawContent: baseSpecRaw } = await loadSpec(
+          octokit, owner, repo, baseSpecPath, pullRequest.base.sha, 'base'
+        ));
+        
+        ({ spec: headSpec, rawContent: headSpecRaw } = await loadSpec(
+          octokit, owner, repo, actualOpenApiPath, pullRequest.head.sha, 'head'
+        ));
+      }
       
       // Enhanced OpenAPI drift detection using @useoptic
       if (baseSpec || headSpec) {

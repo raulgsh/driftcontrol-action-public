@@ -3,44 +3,78 @@ const core = require('@actions/core');
 const riskScorer = require('../../risk-scorer');
 const utils = require('./utils');
 
-async function analyzeTerraformPlan(octokit, owner, repo, pullRequest, terraformPath, costThreshold) {
+async function analyzeTerraformPlan(octokit, owner, repo, pullRequest, terraformPath, costThreshold, contentFetcher = null) {
   try {
     core.info(`Analyzing Terraform plan drift at: ${terraformPath}`);
     
-    // Fetch head version of Terraform plan
     let headPlan = null;
-    let headError = null;
-    try {
-      const { data: headData } = await octokit.rest.repos.getContent({
-        owner,
-        repo,
-        path: terraformPath,
-        ref: pullRequest.head.sha
-      });
-      const headContent = Buffer.from(headData.content, 'base64').toString();
-      headPlan = JSON.parse(headContent);
-      core.info(`Parsed head Terraform plan from: ${terraformPath}`);
-    } catch (error) {
-      headError = error;
-      core.info(`No Terraform plan found in head branch at ${terraformPath}: ${error.message}`);
-    }
-    
-    // Fetch base version of Terraform plan
     let basePlan = null;
+    let headError = null;
     let baseError = null;
-    try {
-      const { data: baseData } = await octokit.rest.repos.getContent({
-        owner,
-        repo,
-        path: terraformPath,
-        ref: pullRequest.base.sha
-      });
-      const baseContent = Buffer.from(baseData.content, 'base64').toString();
-      basePlan = JSON.parse(baseContent);
-      core.info(`Parsed base Terraform plan from: ${terraformPath}`);
-    } catch (error) {
-      baseError = error;
-      core.info(`No Terraform plan found in base branch at ${terraformPath}: ${error.message}`);
+    
+    if (contentFetcher) {
+      // Use ContentFetcher for batch fetching
+      const results = await contentFetcher.batchFetch([
+        { path: terraformPath, ref: pullRequest.head.sha, description: 'head Terraform plan' },
+        { path: terraformPath, ref: pullRequest.base.sha, description: 'base Terraform plan' }
+      ]);
+      
+      try {
+        if (results[0]) {
+          headPlan = JSON.parse(results[0].content);
+          core.info(`Parsed head Terraform plan from: ${terraformPath}`);
+        } else {
+          headError = new Error('Not Found');
+          core.info(`No Terraform plan found in head branch at ${terraformPath}`);
+        }
+      } catch (error) {
+        headError = error;
+        core.info(`Failed to parse head Terraform plan: ${error.message}`);
+      }
+      
+      try {
+        if (results[1]) {
+          basePlan = JSON.parse(results[1].content);
+          core.info(`Parsed base Terraform plan from: ${terraformPath}`);
+        } else {
+          baseError = new Error('Not Found');
+          core.info(`No Terraform plan found in base branch at ${terraformPath}`);
+        }
+      } catch (error) {
+        baseError = error;
+        core.info(`Failed to parse base Terraform plan: ${error.message}`);
+      }
+    } else {
+      // Legacy method for backward compatibility
+      try {
+        const { data: headData } = await octokit.rest.repos.getContent({
+          owner,
+          repo,
+          path: terraformPath,
+          ref: pullRequest.head.sha
+        });
+        const headContent = Buffer.from(headData.content, 'base64').toString();
+        headPlan = JSON.parse(headContent);
+        core.info(`Parsed head Terraform plan from: ${terraformPath}`);
+      } catch (error) {
+        headError = error;
+        core.info(`No Terraform plan found in head branch at ${terraformPath}: ${error.message}`);
+      }
+      
+      try {
+        const { data: baseData } = await octokit.rest.repos.getContent({
+          owner,
+          repo,
+          path: terraformPath,
+          ref: pullRequest.base.sha
+        });
+        const baseContent = Buffer.from(baseData.content, 'base64').toString();
+        basePlan = JSON.parse(baseContent);
+        core.info(`Parsed base Terraform plan from: ${terraformPath}`);
+      } catch (error) {
+        baseError = error;
+        core.info(`No Terraform plan found in base branch at ${terraformPath}: ${error.message}`);
+      }
     }
     
     // If both fetches failed with actual errors (not just missing files), propagate the error
@@ -199,15 +233,29 @@ async function analyzeTerraformPlan(octokit, owner, repo, pullRequest, terraform
   return null;
 }
 
-async function analyzeHCLFile(octokit, owner, repo, pullRequest, filepath) {
+async function analyzeHCLFile(octokit, owner, repo, pullRequest, filepath, contentFetcher = null) {
   try {
     core.info(`HCL analysis for ${filepath} - using basic pattern detection`);
     
-    const { data: headData } = await octokit.rest.repos.getContent({
-      owner, repo, path: filepath, ref: pullRequest.head.sha
-    });
+    let content;
     
-    const content = Buffer.from(headData.content, 'base64').toString();
+    if (contentFetcher) {
+      const result = await contentFetcher.fetchContent(
+        filepath, pullRequest.head.sha, `HCL file ${filepath}`
+      );
+      content = result?.content;
+    } else {
+      // Legacy method for backward compatibility
+      const { data: headData } = await octokit.rest.repos.getContent({
+        owner, repo, path: filepath, ref: pullRequest.head.sha
+      });
+      content = Buffer.from(headData.content, 'base64').toString();
+    }
+    
+    if (!content) {
+      core.warning(`No content found for HCL file: ${filepath}`);
+      return null;
+    }
     const changes = [];
     
     // Basic pattern matching for high-risk HCL patterns

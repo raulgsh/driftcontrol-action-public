@@ -6,13 +6,12 @@ const terraformAnalysis = require('./terraform');
 const cloudformationAnalysis = require('./cloudformation');
 
 class IaCAnalyzer {
-  constructor() {
+  constructor(contentFetcher = null) {
     this.riskScorer = riskScorer;
+    this.contentFetcher = contentFetcher;
   }
 
   async analyzeIaCFiles(files, octokit, owner, repo, pullRequest, terraformPath, cloudformationGlob, costThreshold) {
-    const pullRequestHeadSha = pullRequest.head.sha;
-    const pullRequestBaseSha = pullRequest.base.sha;
     const driftResults = [];
     let hasHighSeverity = false;
     let hasMediumSeverity = false;
@@ -21,7 +20,7 @@ class IaCAnalyzer {
       // Process Terraform plan if specified
       if (terraformPath && files.some(f => f.filename === terraformPath)) {
         const tfResult = await terraformAnalysis.analyzeTerraformPlan(
-          octokit, owner, repo, pullRequest, terraformPath, costThreshold
+          octokit, owner, repo, pullRequest, terraformPath, costThreshold, this.contentFetcher
         );
         if (tfResult) {
           driftResults.push(tfResult);
@@ -72,7 +71,7 @@ class IaCAnalyzer {
 
       for (const file of hclFiles) {
         const hclResult = await terraformAnalysis.analyzeHCLFile(
-          octokit, owner, repo, pullRequest, file.filename
+          octokit, owner, repo, pullRequest, file.filename, this.contentFetcher
         );
         if (hclResult) {
           driftResults.push(hclResult);
@@ -106,11 +105,25 @@ class IaCAnalyzer {
 
   async analyzeKubernetesManifest(octokit, owner, repo, pullRequest, filepath) {
     try {
-      const { data: headData } = await octokit.rest.repos.getContent({
-        owner, repo, path: filepath, ref: pullRequest.head.sha
-      });
+      let content;
       
-      const content = Buffer.from(headData.content, 'base64').toString();
+      if (this.contentFetcher) {
+        const result = await this.contentFetcher.fetchContent(
+          filepath, pullRequest.head.sha, `Kubernetes manifest ${filepath}`
+        );
+        content = result?.content;
+      } else {
+        // Legacy method for backward compatibility
+        const { data: headData } = await octokit.rest.repos.getContent({
+          owner, repo, path: filepath, ref: pullRequest.head.sha
+        });
+        content = Buffer.from(headData.content, 'base64').toString();
+      }
+      
+      if (!content) {
+        core.warning(`No content found for K8s manifest: ${filepath}`);
+        return null;
+      }
       const manifest = yaml.parse(content);
       
       const changes = [];

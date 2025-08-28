@@ -4,6 +4,7 @@ const SqlAnalyzer = require('./sql-analyzer');
 const OpenApiAnalyzer = require('./openapi-analyzer');
 const IaCAnalyzer = require('./iac-analyzer');
 const ConfigAnalyzer = require('./config-analyzer');
+const ContentFetcher = require('./analyzers/content-fetcher');
 const { generateCommentBody, generateFixSuggestion } = require('./comment-generator');
 const { postOrUpdateComment } = require('./github-api');
 const riskScorer = require('./risk-scorer');
@@ -81,11 +82,14 @@ async function run() {
     
     core.info(`Found ${files.length} changed files in PR`);
     
-    // Initialize analyzers
-    const sqlAnalyzer = new SqlAnalyzer();
-    const openApiAnalyzer = new OpenApiAnalyzer();
-    const iacAnalyzer = new IaCAnalyzer();
-    const configAnalyzer = new ConfigAnalyzer();
+    // Initialize content fetcher for decoupled file access
+    const contentFetcher = new ContentFetcher(octokit, owner, repo);
+    
+    // Initialize analyzers with content fetcher
+    const sqlAnalyzer = new SqlAnalyzer(contentFetcher);
+    const openApiAnalyzer = new OpenApiAnalyzer(contentFetcher);
+    const iacAnalyzer = new IaCAnalyzer(contentFetcher);
+    const configAnalyzer = new ConfigAnalyzer(contentFetcher);
     
     // Initialize vulnerability provider before analysis
     await configAnalyzer.initializeVulnerabilityProvider(octokit, {

@@ -14,8 +14,10 @@ const {
 } = require('./utils');
 
 class ConfigAnalyzer {
-  constructor() {
+  constructor(contentFetcher = null) {
     this.riskScorer = riskScorer;
+    this.contentFetcher = contentFetcher;
+    
     // Sensitive key patterns for redaction
     this.sensitivePatterns = /password|secret|token|key|credential|auth|api_key|private|pwd/i;
     
@@ -42,14 +44,27 @@ class ConfigAnalyzer {
     
     for (const ref of tryRefs) {
       try {
-        const params = { owner, repo, path: correlationConfigPath };
-        if (ref) params.ref = ref;
-        
         core.info(`Trying to load correlation config from: ${correlationConfigPath} at ${ref || 'default branch'}`);
-        const { data } = await octokit.rest.repos.getContent(params);
-        configData = data;
-        loadedRef = ref || 'default';
-        break;
+        
+        if (this.contentFetcher) {
+          const result = await this.contentFetcher.fetchContentSafe(
+            correlationConfigPath, ref, `correlation config at ${ref || 'default branch'}`
+          );
+          if (result) {
+            configData = result.rawData;
+            loadedRef = ref || 'default';
+            break;
+          }
+        } else {
+          // Legacy method for backward compatibility  
+          const params = { owner, repo, path: correlationConfigPath };
+          if (ref) params.ref = ref;
+          
+          const { data } = await octokit.rest.repos.getContent(params);
+          configData = data;
+          loadedRef = ref || 'default';
+          break;
+        }
       } catch (error) {
         if (error.status === 404) {
           continue; // Try next ref
@@ -75,7 +90,10 @@ class ConfigAnalyzer {
       
       // Handle large files - if content is missing, try download_url
       let configContent;
-      if (configData.content) {
+      if (this.contentFetcher && configData.content) {
+        // ContentFetcher already provided the content as a string
+        configContent = Buffer.from(configData.content, 'base64').toString();
+      } else if (configData.content) {
         configContent = Buffer.from(configData.content, 'base64').toString();
       } else if (configData.download_url) {
         core.info('Config file is large, fetching via download URL');
@@ -340,23 +358,40 @@ class ConfigAnalyzer {
 
   async analyzeEnvFile(octokit, owner, repo, headSha, baseSha, filepath) {
     try {
-      const { data: headData } = await octokit.rest.repos.getContent({
-        owner, repo, path: filepath, ref: headSha
-      });
+      let headContent, baseContent;
       
-      const headContent = Buffer.from(headData.content, 'base64').toString();
-      const headVars = this.parseEnvFile(headContent);
-      
-      let baseVars = {};
-      try {
-        const { data: baseData } = await octokit.rest.repos.getContent({
-          owner, repo, path: filepath, ref: baseSha
+      if (this.contentFetcher) {
+        const results = await this.contentFetcher.batchFetch([
+          { path: filepath, ref: headSha, description: `env file ${filepath} (head)` },
+          { path: filepath, ref: baseSha, description: `env file ${filepath} (base)` }
+        ]);
+        
+        headContent = results[0]?.content;
+        baseContent = results[1]?.content;
+      } else {
+        // Legacy method for backward compatibility
+        const { data: headData } = await octokit.rest.repos.getContent({
+          owner, repo, path: filepath, ref: headSha
         });
-        const baseContent = Buffer.from(baseData.content, 'base64').toString();
-        baseVars = this.parseEnvFile(baseContent);
-      } catch (e) {
-        // New file
+        headContent = Buffer.from(headData.content, 'base64').toString();
+        
+        try {
+          const { data: baseData } = await octokit.rest.repos.getContent({
+            owner, repo, path: filepath, ref: baseSha
+          });
+          baseContent = Buffer.from(baseData.content, 'base64').toString();
+        } catch (e) {
+          // New file
+        }
       }
+      
+      if (!headContent) {
+        core.warning(`No content found for env file: ${filepath}`);
+        return null;
+      }
+      
+      const headVars = this.parseEnvFile(headContent);
+      const baseVars = baseContent ? this.parseEnvFile(baseContent) : {};
       
       const changes = [];
       const headKeys = Object.keys(headVars);
@@ -406,23 +441,40 @@ class ConfigAnalyzer {
 
   async analyzePropertiesFile(octokit, owner, repo, headSha, baseSha, filepath) {
     try {
-      const { data: headData } = await octokit.rest.repos.getContent({
-        owner, repo, path: filepath, ref: headSha
-      });
+      let headContent, baseContent;
       
-      const headContent = Buffer.from(headData.content, 'base64').toString();
-      const headProps = this.parsePropertiesFile(headContent);
-      
-      let baseProps = {};
-      try {
-        const { data: baseData } = await octokit.rest.repos.getContent({
-          owner, repo, path: filepath, ref: baseSha
+      if (this.contentFetcher) {
+        const results = await this.contentFetcher.batchFetch([
+          { path: filepath, ref: headSha, description: `properties file ${filepath} (head)` },
+          { path: filepath, ref: baseSha, description: `properties file ${filepath} (base)` }
+        ]);
+        
+        headContent = results[0]?.content;
+        baseContent = results[1]?.content;
+      } else {
+        // Legacy method for backward compatibility
+        const { data: headData } = await octokit.rest.repos.getContent({
+          owner, repo, path: filepath, ref: headSha
         });
-        const baseContent = Buffer.from(baseData.content, 'base64').toString();
-        baseProps = this.parsePropertiesFile(baseContent);
-      } catch (e) {
-        // New file
+        headContent = Buffer.from(headData.content, 'base64').toString();
+        
+        try {
+          const { data: baseData } = await octokit.rest.repos.getContent({
+            owner, repo, path: filepath, ref: baseSha
+          });
+          baseContent = Buffer.from(baseData.content, 'base64').toString();
+        } catch (e) {
+          // New file
+        }
       }
+      
+      if (!headContent) {
+        core.warning(`No content found for properties file: ${filepath}`);
+        return null;
+      }
+      
+      const headProps = this.parsePropertiesFile(headContent);
+      const baseProps = baseContent ? this.parsePropertiesFile(baseContent) : {};
       
       const changes = [];
       const headKeys = Object.keys(headProps);

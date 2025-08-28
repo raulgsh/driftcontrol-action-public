@@ -8,8 +8,9 @@ const { parseSqlFile } = require('./parse');
  * Main SQL Analyzer class - orchestrates SQL drift analysis
  */
 class SqlAnalyzer {
-  constructor() {
+  constructor(contentFetcher = null) {
     this.riskScorer = riskScorer;
+    this.contentFetcher = contentFetcher;
   }
 
   async analyzeSqlFiles(files, octokit, owner, repo, pullRequestHeadSha, sqlGlob) {
@@ -38,22 +39,47 @@ class SqlAnalyzer {
     // Collect all SQL file contents for cross-file analysis
     const sqlFileContents = new Map();
     
-    for (const file of changedSqlFiles) {
-      if (file.status === 'removed') continue; // Skip deleted files
-      
-      // Fetch file content for analysis
-      try {
-        const { data: fileData } = await octokit.rest.repos.getContent({
-          owner,
-          repo,
+    // Use ContentFetcher if available, otherwise fallback to legacy method
+    if (this.contentFetcher) {
+      const fetchRequests = changedSqlFiles
+        .filter(file => file.status !== 'removed')
+        .map(file => ({
           path: file.filename,
-          ref: pullRequestHeadSha
+          ref: pullRequestHeadSha,
+          description: `SQL file ${file.filename}`
+        }));
+      
+      const results = await this.contentFetcher.batchFetch(fetchRequests);
+      
+      changedSqlFiles
+        .filter(file => file.status !== 'removed')
+        .forEach((file, index) => {
+          const result = results[index];
+          if (result) {
+            sqlFileContents.set(file.filename, result.content);
+          } else {
+            core.warning(`Could not analyze file ${file.filename}`);
+          }
         });
+    } else {
+      // Legacy method for backward compatibility
+      for (const file of changedSqlFiles) {
+        if (file.status === 'removed') continue; // Skip deleted files
         
-        const content = Buffer.from(fileData.content, 'base64').toString();
-        sqlFileContents.set(file.filename, content);
-      } catch (fileError) {
-        core.warning(`Could not analyze file ${file.filename}: ${fileError.message}`);
+        // Fetch file content for analysis
+        try {
+          const { data: fileData } = await octokit.rest.repos.getContent({
+            owner,
+            repo,
+            path: file.filename,
+            ref: pullRequestHeadSha
+          });
+          
+          const content = Buffer.from(fileData.content, 'base64').toString();
+          sqlFileContents.set(file.filename, content);
+        } catch (fileError) {
+          core.warning(`Could not analyze file ${file.filename}: ${fileError.message}`);
+        }
       }
     }
     

@@ -6,6 +6,15 @@ jest.mock('@apidevtools/swagger-parser');
 jest.mock('@useoptic/openapi-utilities');
 jest.mock('js-yaml');
 
+// Mock ContentFetcher for simpler testing
+class MockContentFetcher {
+  constructor() {
+    this.fetchContent = jest.fn();
+    this.fetchContentSafe = jest.fn();
+    this.batchFetch = jest.fn();
+  }
+}
+
 const core = require('@actions/core');
 const SwaggerParser = require('@apidevtools/swagger-parser');
 const { diff } = require('@useoptic/openapi-utilities');
@@ -14,16 +23,20 @@ const yaml = require('js-yaml');
 describe('OpenApiAnalyzer', () => {
   let analyzer;
   let mockOctokit;
+  let mockContentFetcher;
   let mockRiskScorer;
 
   beforeEach(() => {
     // Clear all mocks
     jest.clearAllMocks();
 
-    // Create fresh instance
-    analyzer = new OpenApiAnalyzer();
+    // Create mock content fetcher
+    mockContentFetcher = new MockContentFetcher();
 
-    // Mock octokit
+    // Create fresh instance with mock content fetcher
+    analyzer = new OpenApiAnalyzer(mockContentFetcher);
+
+    // Mock octokit (for legacy fallback tests)
     mockOctokit = {
       rest: {
         repos: {
@@ -56,6 +69,12 @@ describe('OpenApiAnalyzer', () => {
     test('should create instance with riskScorer', () => {
       const newAnalyzer = new OpenApiAnalyzer();
       expect(newAnalyzer.riskScorer).toBeDefined();
+    });
+
+    test('should accept contentFetcher in constructor', () => {
+      const contentFetcher = new MockContentFetcher();
+      const newAnalyzer = new OpenApiAnalyzer(contentFetcher);
+      expect(newAnalyzer.contentFetcher).toBe(contentFetcher);
     });
   });
 
@@ -160,11 +179,27 @@ describe('OpenApiAnalyzer', () => {
     };
 
     test('should return empty results when neither base nor head spec exists', async () => {
+      // With ContentFetcher, testing is much simpler - just mock the loadSpec returns
+      mockContentFetcher.batchFetch.mockResolvedValue([null, null]);
+
+      const result = await analyzer.analyzeOpenApiDrift(
+        mockOctokit, 'owner', 'repo', basePullRequest, 'openapi.yaml', null
+      );
+
+      expect(result.driftResults).toEqual([]);
+      expect(result.hasHighSeverity).toBe(false);
+      expect(result.hasMediumSeverity).toBe(false);
+    });
+
+    test('should fallback to legacy method when no contentFetcher', async () => {
+      // Test backward compatibility
+      const legacyAnalyzer = new OpenApiAnalyzer(); // No contentFetcher
+      
       mockOctokit.rest.repos.getContent
         .mockRejectedValueOnce(new Error('File not found'))
         .mockRejectedValueOnce(new Error('File not found'));
 
-      const result = await analyzer.analyzeOpenApiDrift(
+      const result = await legacyAnalyzer.analyzeOpenApiDrift(
         mockOctokit, 'owner', 'repo', basePullRequest, 'openapi.yaml', null
       );
 

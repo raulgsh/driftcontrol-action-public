@@ -1,6 +1,7 @@
 const core = require('@actions/core');
 const SwaggerParser = require('@apidevtools/swagger-parser');
 const yaml = require('yaml');
+const ContentFetcher = require('../content-fetcher');
 
 /**
  * OpenAPI IO utilities - spec loading and rename detection
@@ -38,14 +39,41 @@ function detectSpecRenames(files, openApiPath) {
 // Load and parse OpenAPI spec from GitHub
 async function loadSpec(octokit, owner, repo, path, ref, description) {
   try {
-    const { data } = await octokit.rest.repos.getContent({
-      owner,
-      repo,
-      path,
-      ref
-    });
+    const contentFetcher = new ContentFetcher(octokit, owner, repo);
+    const result = await contentFetcher.fetchContent(path, ref, `${description} OpenAPI spec`);
     
-    const rawContent = Buffer.from(data.content, 'base64').toString();
+    if (!result) {
+      return { spec: null, rawContent: null };
+    }
+    
+    const { content: rawContent } = result;
+    
+    // Parse based on content format
+    const parsedContent = rawContent.trim().startsWith('{') 
+      ? JSON.parse(rawContent) 
+      : yaml.parse(rawContent);
+    
+    // Validate using SwaggerParser
+    const spec = await SwaggerParser.parse(JSON.parse(JSON.stringify(parsedContent)));
+    
+    core.info(`Parsed ${description} OpenAPI spec from: ${path}`);
+    return { spec, rawContent };
+  } catch (error) {
+    core.info(`No valid OpenAPI spec found in ${description} branch at ${path}: ${error.message}`);
+    return { spec: null, rawContent: null };
+  }
+}
+
+// Load and parse OpenAPI spec using ContentFetcher directly
+async function loadSpecWithFetcher(contentFetcher, path, ref, description) {
+  try {
+    const result = await contentFetcher.fetchContent(path, ref, `${description} OpenAPI spec`);
+    
+    if (!result) {
+      return { spec: null, rawContent: null };
+    }
+    
+    const { content: rawContent } = result;
     
     // Parse based on content format
     const parsedContent = rawContent.trim().startsWith('{') 
@@ -65,5 +93,6 @@ async function loadSpec(octokit, owner, repo, path, ref, description) {
 
 module.exports = {
   detectSpecRenames,
-  loadSpec
+  loadSpec,
+  loadSpecWithFetcher
 };
