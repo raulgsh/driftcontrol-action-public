@@ -94,10 +94,14 @@ function compareVersions(v1, v2) {
 // Vulnerability provider system - pluggable vulnerability detection
 class VulnerabilityProvider {
   async initialize(options = {}) {
-    // One-time setup per PR
+    // One-time setup per PR - override in subclasses
+    // eslint-disable-next-line no-unused-vars
+    const _ = options;
   }
   
   isVulnerable(packageName, version) {
+    // eslint-disable-next-line no-unused-vars
+    const _ = { packageName, version };
     throw new Error('Provider must implement isVulnerable()');
   }
 }
@@ -155,6 +159,201 @@ class GitHubAdvisoryProvider extends VulnerabilityProvider {
   
   getVulnerabilityInfo(packageName, version) {
     return this.vulnerabilities.get(`${packageName}@${version}`);
+  }
+}
+
+class OSVProvider extends VulnerabilityProvider {
+  constructor() {
+    super();
+    this.vulnerabilities = new Map(); // Cache for entire PR
+    this.initialized = false;
+  }
+
+  async initialize({ packageNames = [] }) {
+    if (this.initialized) return; // Prevent duplicate calls
+    
+    try {
+      core.info('Fetching vulnerability data from OSV database...');
+      
+      if (packageNames.length === 0) {
+        core.info('No packages to query from OSV database');
+        this.initialized = true;
+        return;
+      }
+
+      // Use batch query for initial vulnerability IDs, then fetch details only as needed
+      const batchQueries = packageNames.map(pkg => ({
+        package: { name: pkg, ecosystem: 'npm' }
+      }));
+
+      // Split into smaller batches (OSV has a 1000 query limit)
+      const batchSize = 100;
+      for (let i = 0; i < batchQueries.length; i += batchSize) {
+        const batch = batchQueries.slice(i, i + batchSize);
+        
+        try {
+          const response = await fetch('https://api.osv.dev/v1/querybatch', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              queries: batch
+            })
+          });
+
+          if (!response.ok) {
+            core.warning(`OSV batch query returned ${response.status}`);
+            continue;
+          }
+
+          const data = await response.json();
+          
+          // Process each package result
+          for (let j = 0; j < data.results.length; j++) {
+            const result = data.results[j];
+            const packageName = batch[j].package.name;
+            
+            if (result.vulns && result.vulns.length > 0) {
+              // For performance: get full details for first vulnerability only
+              // In production, you might want to fetch all, but this reduces API calls
+              const firstVulnId = result.vulns[0].id;
+              
+              try {
+                const vulnResponse = await fetch(`https://api.osv.dev/v1/vulns/${firstVulnId}`);
+                if (vulnResponse.ok) {
+                  const vulnDetails = await vulnResponse.json();
+                  
+                  // Extract affected versions for this specific package
+                  const affectedRanges = vulnDetails.affected || [];
+                  for (const affected of affectedRanges) {
+                    if (affected.package?.name === packageName && affected.package?.ecosystem === 'npm') {
+                      const vulnInfo = {
+                        id: vulnDetails.id,
+                        severity: this.extractSeverity(vulnDetails),
+                        summary: vulnDetails.summary,
+                        affected: affected.ranges || [],
+                        database_specific: vulnDetails.database_specific,
+                        totalVulns: result.vulns.length // Track total for reporting
+                      };
+                      
+                      this.vulnerabilities.set(packageName, [vulnInfo]);
+                      break;
+                    }
+                  }
+                }
+              } catch (vulnError) {
+                core.warning(`Failed to fetch details for ${firstVulnId}: ${vulnError.message}`);
+              }
+            }
+          }
+        } catch (batchError) {
+          core.warning(`OSV batch query failed: ${batchError.message}`);
+        }
+      }
+      
+      this.initialized = true;
+      core.info(`Cached vulnerabilities for ${this.vulnerabilities.size} packages from OSV database`);
+    } catch (e) {
+      core.warning(`OSV API failed: ${e.message}. Falling back to static list.`);
+      this.initialized = true; // Don't retry on failure
+    }
+  }
+
+  extractSeverity(vuln) {
+    // Check multiple severity sources in OSV format
+    if (vuln.severity && Array.isArray(vuln.severity)) {
+      for (const sev of vuln.severity) {
+        if (sev.type === 'CVSS_V3' && sev.score) {
+          // Convert CVSS score to severity level
+          const score = parseFloat(sev.score);
+          if (score >= 9.0) return 'critical';
+          if (score >= 7.0) return 'high';
+          if (score >= 4.0) return 'moderate';
+          return 'low';
+        }
+      }
+    }
+    
+    // Check database-specific severity
+    if (vuln.database_specific?.severity) {
+      return vuln.database_specific.severity.toLowerCase();
+    }
+    
+    // Default to moderate if no severity information
+    return 'moderate';
+  }
+
+  isVulnerable(packageName, version) {
+    const vulns = this.vulnerabilities.get(packageName);
+    if (!vulns) return false;
+
+    // Check if version falls within any vulnerable range
+    for (const vuln of vulns) {
+      if (this.isVersionInVulnerableRange(version, vuln.affected)) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+
+  isVersionInVulnerableRange(version, ranges) {
+    if (!ranges || ranges.length === 0) return false;
+    
+    const cleanVersion = version.replace(/^[\^~=v]/, '');
+    
+    for (const range of ranges) {
+      if (range.type === 'SEMVER') {
+        // Handle SEMVER ranges
+        for (const event of range.events || []) {
+          if (event.introduced && event.introduced === '0' && !event.fixed) {
+            return true; // All versions vulnerable
+          }
+          
+          if (event.introduced && !event.fixed) {
+            // Version introduced and no fix yet
+            if (compareVersions(cleanVersion, event.introduced) >= 0) {
+              return true;
+            }
+          }
+          
+          if (event.introduced && event.fixed) {
+            // Vulnerable range: introduced <= version < fixed
+            if (compareVersions(cleanVersion, event.introduced) >= 0 && 
+                compareVersions(cleanVersion, event.fixed) < 0) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    
+    return false;
+  }
+  
+  getVulnerabilityInfo(packageName, version) {
+    const vulns = this.vulnerabilities.get(packageName);
+    if (!vulns) return null;
+
+    // Return vulnerabilities that affect this version
+    const affectingVulns = vulns.filter(vuln => 
+      this.isVersionInVulnerableRange(version, vuln.affected)
+    );
+    
+    return affectingVulns.length > 0 ? {
+      vulnerabilities: affectingVulns,
+      severity: this.getHighestSeverity(affectingVulns),
+      version: version
+    } : null;
+  }
+
+  getHighestSeverity(vulns) {
+    const severityOrder = ['critical', 'high', 'moderate', 'low'];
+    return vulns.reduce((highest, v) => {
+      const current = (v.severity || 'moderate').toLowerCase();
+      return severityOrder.indexOf(current) < severityOrder.indexOf(highest) ? current : highest;
+    }, 'low');
   }
 }
 
@@ -256,6 +455,7 @@ module.exports = {
   compareVersions,
   VulnerabilityProvider,
   GitHubAdvisoryProvider,
+  OSVProvider,
   StaticListProvider,
   setVulnerabilityProvider,
   isKnownVulnerablePackage

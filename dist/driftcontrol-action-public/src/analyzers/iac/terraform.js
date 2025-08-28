@@ -1,25 +1,84 @@
 // Terraform plan analysis
 const core = require('@actions/core');
+const path = require('path');
+const fs = require('fs');
 const riskScorer = require('../../risk-scorer');
 const { 
   estimateResourceCost, 
   fetchBaseAndHeadTemplates,
   buildResourceMap,
   analyzeResourceChanges,
-  buildIaCResult
+  buildIaCResult,
+  generateTerraformPlan,
+  checkoutToTemp
 } = require('./utils');
 
 async function analyzeTerraformPlan(octokit, owner, repo, pullRequest, terraformPath, costThreshold, contentFetcher = null) {
   try {
-    core.info(`Analyzing Terraform plan drift at: ${terraformPath}`);
+    core.info(`Analyzing Terraform drift at: ${terraformPath}`);
     
-    // Use generic template fetching with JSON parser
-    const { baseTemplate: basePlan, headTemplate: headPlan } = await fetchBaseAndHeadTemplates(
-      octokit, owner, repo, terraformPath, pullRequest,
-      content => JSON.parse(content),
-      contentFetcher
-    );
+    let basePlan, headPlan;
+    let usingGeneratedPlan = false;
     
+    // First try to use existing JSON plan if it's a .json file
+    if (terraformPath.endsWith('.json')) {
+      const { baseTemplate: basePlanJson, headTemplate: headPlanJson } = await fetchBaseAndHeadTemplates(
+        octokit, owner, repo, terraformPath, pullRequest,
+        content => JSON.parse(content),
+        contentFetcher
+      );
+      basePlan = basePlanJson;
+      headPlan = headPlanJson;
+      core.info('Using existing JSON plan files for analysis');
+    } 
+    // If it's an HCL file or directory, try to generate plan
+    else if (terraformPath.endsWith('.tf') || !terraformPath.includes('.')) {
+      core.info('Attempting to generate Terraform plan from HCL files...');
+      
+      // Determine working directory
+      const workingDir = terraformPath.includes('.tf') 
+        ? path.dirname(terraformPath)
+        : terraformPath;
+      
+      // Try to generate plans for both base and head in GitHub Actions environment
+      if (process.env.GITHUB_ACTIONS) {
+        // In GitHub Actions, we have access to the workspace
+        try {
+          // Checkout base branch to temp directory
+          const baseTempDir = path.join('/tmp', `base-${pullRequest.base.sha.substring(0, 8)}`);
+          const baseCheckout = await checkoutToTemp(octokit, owner, repo, pullRequest.base.sha, baseTempDir);
+          if (baseCheckout) {
+            basePlan = await generateTerraformPlan(path.join(baseTempDir, workingDir));
+            // Cleanup base temp directory
+            fs.rmSync(baseTempDir, { recursive: true, force: true });
+          }
+          
+          // Checkout head branch to temp directory  
+          const headTempDir = path.join('/tmp', `head-${pullRequest.head.sha.substring(0, 8)}`);
+          const headCheckout = await checkoutToTemp(octokit, owner, repo, pullRequest.head.sha, headTempDir);
+          if (headCheckout) {
+            headPlan = await generateTerraformPlan(path.join(headTempDir, workingDir));
+            // Cleanup head temp directory
+            fs.rmSync(headTempDir, { recursive: true, force: true });
+          }
+          
+          if (basePlan || headPlan) {
+            usingGeneratedPlan = true;
+            core.info('Successfully generated Terraform plans for analysis');
+          }
+        } catch (planError) {
+          core.warning(`Plan generation failed: ${planError.message}`);
+        }
+      }
+    }
+    
+    // If we couldn't get plans through generation or JSON, fall back to HCL analysis
+    if (!basePlan && !headPlan && terraformPath.endsWith('.tf')) {
+      core.info('Falling back to HCL pattern analysis');
+      return await analyzeHCLFile(octokit, owner, repo, pullRequest, terraformPath, contentFetcher);
+    }
+    
+    // Continue with existing plan analysis logic
     let iacChanges = [];
     let estimatedCostIncrease = 0;
     
@@ -79,8 +138,14 @@ async function analyzeTerraformPlan(octokit, owner, repo, pullRequest, terraform
       estimatedCostIncrease = result.estimatedCostIncrease;
     }
     
-    // Use shared result builder
-    return buildIaCResult(iacChanges, terraformPath, 'INFRASTRUCTURE', costThreshold, estimatedCostIncrease, riskScorer);
+    // Use shared result builder with note about plan generation if used
+    const result = buildIaCResult(iacChanges, terraformPath, 'INFRASTRUCTURE', costThreshold, estimatedCostIncrease, riskScorer);
+    
+    if (result && usingGeneratedPlan) {
+      result.note = 'Analysis based on auto-generated Terraform plan';
+    }
+    
+    return result;
   } catch (error) {
     core.warning(`Terraform plan analysis failed: ${error.message}`);
   }

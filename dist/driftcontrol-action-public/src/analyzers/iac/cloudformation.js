@@ -11,7 +11,7 @@ const {
 } = require('./utils');
 const { globToRegex } = require('../../comment-generator');
 
-async function analyzeCloudFormationTemplates(files, octokit, owner, repo, pullRequest, cloudformationGlob, costThreshold) {
+async function analyzeCloudFormationTemplates(files, octokit, owner, repo, pullRequest, cloudformationGlob, costThreshold, contentFetcher = null) {
   const results = [];
   
   // Convert glob to regex using shared utility
@@ -29,7 +29,8 @@ async function analyzeCloudFormationTemplates(files, octokit, owner, repo, pullR
       // Use generic template fetching with YAML/JSON parser
       const { baseTemplate, headTemplate } = await fetchBaseAndHeadTemplates(
         octokit, owner, repo, file.filename, pullRequest,
-        content => content.trim().startsWith('{') ? JSON.parse(content) : yaml.parse(content)
+        content => content.trim().startsWith('{') ? JSON.parse(content) : yaml.parse(content),
+        contentFetcher
       );
       
       let iacChanges = [];

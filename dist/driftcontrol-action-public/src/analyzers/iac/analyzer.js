@@ -32,7 +32,7 @@ class IaCAnalyzer {
       // Process CloudFormation templates if specified
       if (cloudformationGlob) {
         const cfResults = await cloudformationAnalysis.analyzeCloudFormationTemplates(
-          files, octokit, owner, repo, pullRequest, cloudformationGlob, costThreshold
+          files, octokit, owner, repo, pullRequest, cloudformationGlob, costThreshold, this.contentFetcher
         );
         for (const result of cfResults) {
           driftResults.push(result);
