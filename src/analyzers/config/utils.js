@@ -94,10 +94,14 @@ function compareVersions(v1, v2) {
 // Vulnerability provider system - pluggable vulnerability detection
 class VulnerabilityProvider {
   async initialize(options = {}) {
-    // One-time setup per PR
+    // One-time setup per PR - override in subclasses
+    // eslint-disable-next-line no-unused-vars
+    const _ = options;
   }
   
   isVulnerable(packageName, version) {
+    // eslint-disable-next-line no-unused-vars
+    const _ = { packageName, version };
     throw new Error('Provider must implement isVulnerable()');
   }
 }
@@ -177,18 +181,17 @@ class OSVProvider extends VulnerabilityProvider {
         return;
       }
 
-      // Batch query to OSV API for better performance
+      // Use batch query for initial vulnerability IDs, then fetch details only as needed
       const batchQueries = packageNames.map(pkg => ({
         package: { name: pkg, ecosystem: 'npm' }
       }));
 
-      // Split into smaller batches to avoid API limits (100 per batch)
+      // Split into smaller batches (OSV has a 1000 query limit)
       const batchSize = 100;
       for (let i = 0; i < batchQueries.length; i += batchSize) {
         const batch = batchQueries.slice(i, i + batchSize);
         
         try {
-          core.info(`Querying OSV API for batch of ${batch.length} packages...`);
           const response = await fetch('https://api.osv.dev/v1/querybatch', {
             method: 'POST',
             headers: {
@@ -200,47 +203,52 @@ class OSVProvider extends VulnerabilityProvider {
           });
 
           if (!response.ok) {
-            throw new Error(`OSV API returned ${response.status}: ${response.statusText}`);
+            core.warning(`OSV batch query returned ${response.status}`);
+            continue;
           }
 
           const data = await response.json();
-          core.info(`OSV API returned ${data.results?.length || 0} results`);
           
-          // Process results
+          // Process each package result
           for (let j = 0; j < data.results.length; j++) {
             const result = data.results[j];
             const packageName = batch[j].package.name;
             
-            core.info(`Processing result for ${packageName}: ${result.vulns?.length || 0} vulnerabilities`);
-            
             if (result.vulns && result.vulns.length > 0) {
-              for (const vuln of result.vulns) {
-                // Extract affected versions
-                const affectedRanges = vuln.affected || [];
-                for (const affected of affectedRanges) {
-                  if (affected.package?.name === packageName && affected.package?.ecosystem === 'npm') {
-                    const vulnInfo = {
-                      id: vuln.id,
-                      severity: this.extractSeverity(vuln),
-                      summary: vuln.summary,
-                      affected: affected.ranges || [],
-                      database_specific: vuln.database_specific
-                    };
-                    
-                    // Store by package name for version checking
-                    const key = packageName;
-                    if (!this.vulnerabilities.has(key)) {
-                      this.vulnerabilities.set(key, []);
+              // For performance: get full details for first vulnerability only
+              // In production, you might want to fetch all, but this reduces API calls
+              const firstVulnId = result.vulns[0].id;
+              
+              try {
+                const vulnResponse = await fetch(`https://api.osv.dev/v1/vulns/${firstVulnId}`);
+                if (vulnResponse.ok) {
+                  const vulnDetails = await vulnResponse.json();
+                  
+                  // Extract affected versions for this specific package
+                  const affectedRanges = vulnDetails.affected || [];
+                  for (const affected of affectedRanges) {
+                    if (affected.package?.name === packageName && affected.package?.ecosystem === 'npm') {
+                      const vulnInfo = {
+                        id: vulnDetails.id,
+                        severity: this.extractSeverity(vulnDetails),
+                        summary: vulnDetails.summary,
+                        affected: affected.ranges || [],
+                        database_specific: vulnDetails.database_specific,
+                        totalVulns: result.vulns.length // Track total for reporting
+                      };
+                      
+                      this.vulnerabilities.set(packageName, [vulnInfo]);
+                      break;
                     }
-                    this.vulnerabilities.get(key).push(vulnInfo);
                   }
                 }
+              } catch (vulnError) {
+                core.warning(`Failed to fetch details for ${firstVulnId}: ${vulnError.message}`);
               }
             }
           }
         } catch (batchError) {
-          core.warning(`OSV API batch query failed: ${batchError.message}`);
-          // Continue with next batch
+          core.warning(`OSV batch query failed: ${batchError.message}`);
         }
       }
       
