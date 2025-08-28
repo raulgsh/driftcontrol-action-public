@@ -35,8 +35,8 @@ class ConfigAnalyzer {
     this.vulnerabilityProvider = null;
   }
 
-  // Load user-defined correlation configuration from .github/driftcontrol.yml
-  async loadCorrelationConfig(octokit, owner, repo, pullRequest, correlationConfigPath) {
+  // Load complete DriftControl configuration from .github/driftcontrol.yml
+  async loadDriftControlConfig(octokit, owner, repo, pullRequest, correlationConfigPath) {
     // Try multiple refs in order: PR head, PR base, default branch
     const tryRefs = [pullRequest.head.sha, pullRequest.base.sha, undefined];
     let configData = null;
@@ -74,12 +74,16 @@ class ConfigAnalyzer {
     }
     
     if (!configData) {
-      core.info(`No correlation config found at ${correlationConfigPath} in any branch - using heuristic correlation only`);
+      core.info(`No DriftControl config found at ${correlationConfigPath} in any branch - using defaults`);
       return {
         correlationRules: [],
         strategyConfig: {},
         thresholds: {},
         limits: {},
+        analysis: {},
+        risk: {},
+        llm: {},
+        vulnerability: {},
         configPath: correlationConfigPath,
         loaded: false
       };
@@ -213,11 +217,62 @@ class ConfigAnalyzer {
         core.info(`Loaded limits: ${JSON.stringify(limits)}`);
       }
       
+      // Parse analysis configuration
+      let analysis = {};
+      if (config.analysis) {
+        analysis = {
+          openapi_path: config.analysis.openapi_path,
+          sql_glob: config.analysis.sql_glob,
+          terraform_plan_path: config.analysis.terraform_plan_path,
+          cloudformation_glob: config.analysis.cloudformation_glob,
+          config_yaml_glob: config.analysis.config_yaml_glob,
+          feature_flags_path: config.analysis.feature_flags_path,
+          kubernetes_glob: config.analysis.kubernetes_glob,
+          env_files: config.analysis.env_files
+        };
+        core.info(`Loaded analysis configuration: ${Object.keys(analysis).length} settings`);
+      }
+      
+      // Parse risk configuration
+      let risk = {};
+      if (config.risk) {
+        risk = {
+          fail_on_medium: config.risk.fail_on_medium,
+          cost_threshold: config.risk.cost_threshold,
+          override: config.risk.override
+        };
+        core.info(`Loaded risk configuration: ${Object.keys(risk).length} settings`);
+      }
+      
+      // Parse LLM configuration
+      let llm = {};
+      if (config.llm) {
+        llm = {
+          provider: config.llm.provider,
+          model: config.llm.model,
+          max_tokens: config.llm.max_tokens
+        };
+        core.info(`Loaded LLM configuration: ${Object.keys(llm).length} settings`);
+      }
+      
+      // Parse vulnerability configuration
+      let vulnerability = {};
+      if (config.vulnerability) {
+        vulnerability = {
+          provider: config.vulnerability.provider
+        };
+        core.info(`Loaded vulnerability configuration: ${Object.keys(vulnerability).length} settings`);
+      }
+      
       return {
         correlationRules,
         strategyConfig,
         thresholds,
         limits,
+        analysis,
+        risk,
+        llm,
+        vulnerability,
         configPath: correlationConfigPath,
         loaded: true
       };
@@ -227,11 +282,15 @@ class ConfigAnalyzer {
       if (error.status === 404) {
         core.info(`No correlation config found at ${correlationConfigPath} - using heuristic correlation only`);
       } else {
-        core.warning(`Failed to load correlation config: ${error.message}`);
+        core.warning(`Failed to load DriftControl config: ${error.message}`);
       }
       
       return {
         correlationRules: [],
+        analysis: {},
+        risk: {},
+        llm: {},
+        vulnerability: {},
         configPath: correlationConfigPath,
         loaded: false
       };
@@ -525,6 +584,41 @@ class ConfigAnalyzer {
       }
     });
     return props;
+  }
+
+  // Backward compatibility method - delegates to loadDriftControlConfig
+  async loadCorrelationConfig(octokit, owner, repo, pullRequest, correlationConfigPath) {
+    const config = await this.loadDriftControlConfig(octokit, owner, repo, pullRequest, correlationConfigPath);
+    // Return only correlation-related properties for backward compatibility
+    return {
+      correlationRules: config.correlationRules,
+      strategyConfig: config.strategyConfig,
+      thresholds: config.thresholds,
+      limits: config.limits,
+      configPath: config.configPath,
+      loaded: config.loaded
+    };
+  }
+
+  async initializeVulnerabilityProvider(octokit, config = {}) {
+    const { provider = 'static', owner, repo, baseSha, headSha } = config;
+    
+    if (provider === 'github' && octokit) {
+      const { GitHubAdvisoryProvider, setVulnerabilityProvider } = require('./utils');
+      this.vulnerabilityProvider = new GitHubAdvisoryProvider(octokit);
+      
+      // Critical: Initialize ONCE with PR context
+      await this.vulnerabilityProvider.initialize({ owner, repo, baseSha, headSha });
+      
+      setVulnerabilityProvider(this.vulnerabilityProvider);
+      core.info('Using GitHub Advisory Database for vulnerability detection');
+    } else {
+      const { StaticListProvider, setVulnerabilityProvider } = require('./utils');
+      this.vulnerabilityProvider = new StaticListProvider();
+      await this.vulnerabilityProvider.initialize();
+      setVulnerabilityProvider(this.vulnerabilityProvider);
+      core.info('Using static vulnerability list (fallback)');
+    }
   }
 }
 

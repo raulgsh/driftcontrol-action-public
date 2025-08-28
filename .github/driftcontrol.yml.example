@@ -1,8 +1,83 @@
 # DriftControl Configuration File Example
 # Place this file at .github/driftcontrol.yml in your repository
+#
+# This file centralizes all DriftControl configuration options.
+# Configuration precedence: action.yml inputs > driftcontrol.yml > defaults
+
+# =============================================================================
+# ANALYSIS CONFIGURATION
+# Configure which files and patterns to analyze for drift detection
+# All settings are optional - action.yml inputs take priority over these values
+# =============================================================================
+analysis:
+  # OpenAPI specification file path
+  openapi_path: 'openapi.yaml'
+  
+  # SQL migration files glob pattern
+  sql_glob: 'migrations/**/*.sql'
+  
+  # Terraform plan JSON file path (optional)
+  terraform_plan_path: ''
+  
+  # CloudFormation template files glob pattern (optional)
+  cloudformation_glob: ''
+  
+  # General configuration YAML files glob pattern (optional)
+  config_yaml_glob: ''
+  
+  # Feature flags configuration file path (optional)  
+  feature_flags_path: ''
+  
+  # Kubernetes manifest files glob pattern
+  kubernetes_glob: '**/k8s/**/*.{yaml,yml}'
+  
+  # Analyze .env files for secret changes
+  env_files: true
+
+# =============================================================================
+# RISK ASSESSMENT CONFIGURATION
+# Configure severity thresholds and blocking behavior
+# =============================================================================
+risk:
+  # Fail the check on medium-severity drift (boolean)
+  fail_on_medium: false
+  
+  # Cost increase threshold in USD to trigger medium severity
+  cost_threshold: 1000
+  
+  # Allow bypassing merge blocks (boolean)
+  override: false
+
+# =============================================================================
+# LLM INTEGRATION CONFIGURATION  
+# Configure AI-powered enhanced explanations (optional)
+# Note: API keys should still be provided via GitHub secrets in workflow files
+# =============================================================================
+llm:
+  # LLM provider: 'openai' or 'anthropic' (leave empty to disable)
+  provider: ''
+  
+  # Model to use: 'gpt-4', 'gpt-3.5-turbo', 'claude-3-opus', 'claude-3-sonnet'
+  model: ''
+  
+  # Maximum tokens for LLM response
+  max_tokens: 150
+
+# =============================================================================
+# VULNERABILITY DETECTION CONFIGURATION
+# Configure how security vulnerabilities are detected
+# =============================================================================
+vulnerability:
+  # Vulnerability detection provider: 'static' or 'github'
+  provider: 'static'
+
+# =============================================================================
+# CORRELATION RULES CONFIGURATION  
+# Define explicit relationships between API endpoints, database tables, and infrastructure
+# These rules override heuristic correlations with confidence 1.0
+# =============================================================================
 
 # User-defined correlation rules for explicit relationship mappings
-# These rules override heuristic correlations with confidence 1.0
 correlation_rules:
   # Map API endpoints to database tables (simple format)
   - type: api_to_db
@@ -57,13 +132,21 @@ correlation_rules:
     target: src
     reason: "Documentation changes don't affect source code"
 
-# Additional configuration options (future expansion)
-# severity_overrides:
-#   - path: critical/payments/*
-#     minimum_severity: high
-#     reason: "Payment processing code requires strict review"
+# =============================================================================
+# USAGE EXAMPLES
+# =============================================================================
 #
-# notification_settings:
-#   - type: slack
-#     webhook_url: ${{ secrets.SLACK_WEBHOOK }}
-#     on_severity: high
+# Minimal workflow with centralized config:
+#   - uses: your-org/driftcontrol-action@v1
+#     with:
+#       token: ${{ github.token }}
+#       llm_api_key: ${{ secrets.OPENAI_API_KEY }}  # Only if LLM is configured above
+#
+# All other settings will be read from this file, eliminating workflow clutter!
+#
+# Benefits of using this configuration file:
+# - Cleaner workflow files (one line vs 24+ action inputs)
+# - Project-wide configuration that lives with your code
+# - Version controlled alongside your repository
+# - Easy team collaboration on DriftControl settings
+# - Full backward compatibility - existing workflows continue working

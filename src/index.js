@@ -12,24 +12,54 @@ const { correlateAcrossLayers, identifyRootCauses } = require('./correlation');
 
 async function run() {
   try {
-    // Get all inputs defined in action.yml
-    const openApiPath = core.getInput('openapi_path');
-    const sqlGlob = core.getInput('sql_glob');
-    const failOnMedium = core.getInput('fail_on_medium');
-    const override = core.getInput('override');
-    const terraformPlanPath = core.getInput('terraform_plan_path');
-    const cloudformationGlob = core.getInput('cloudformation_glob');
-    const costThreshold = core.getInput('cost_threshold');
-    const configYamlGlob = core.getInput('config_yaml_glob');
-    const featureFlagsPath = core.getInput('feature_flags_path');
-    const correlationConfigPath = core.getInput('correlation_config_path');
-    const vulnerabilityProvider = core.getInput('vulnerability_provider') || 'static';
+    // Get GitHub context and authenticate first (needed for config loading)
+    const token = core.getInput('token') || process.env.GITHUB_TOKEN;
+    if (!token) {
+      throw new Error('GITHUB_TOKEN is required');
+    }
+    
+    const octokit = github.getOctokit(token);
+    const context = github.context;
+    
+    // Check if this is a pull request event
+    if (!context.payload.pull_request) {
+      core.info('Not a pull request event, skipping drift detection');
+      return;
+    }
+    
+    const { owner, repo } = context.repo;
+    const pullNumber = context.payload.pull_request.number;
+    
+    // Initialize ConfigAnalyzer early to load centralized configuration
+    const configAnalyzer = new ConfigAnalyzer();
+    const correlationConfigPath = core.getInput('correlation_config_path') || '.github/driftcontrol.yml';
+    
+    // Load centralized DriftControl configuration first
+    let driftControlConfig = null;
+    if (correlationConfigPath) {
+      driftControlConfig = await configAnalyzer.loadDriftControlConfig(octokit, owner, repo, context.payload.pull_request, correlationConfigPath);
+      if (driftControlConfig.loaded) {
+        core.info(`DriftControl config loaded with ${driftControlConfig.correlationRules.length} correlation rules`);
+      }
+    }
+    
+    // Get configuration with priority: action.yml inputs > driftcontrol.yml > defaults
+    const openApiPath = core.getInput('openapi_path') || driftControlConfig?.analysis?.openapi_path || 'openapi.yaml';
+    const sqlGlob = core.getInput('sql_glob') || driftControlConfig?.analysis?.sql_glob || 'migrations/**/*.sql';
+    const failOnMedium = core.getInput('fail_on_medium') || driftControlConfig?.risk?.fail_on_medium?.toString() || 'false';
+    const override = core.getInput('override') || driftControlConfig?.risk?.override?.toString() || 'false';
+    const terraformPlanPath = core.getInput('terraform_plan_path') || driftControlConfig?.analysis?.terraform_plan_path || '';
+    const cloudformationGlob = core.getInput('cloudformation_glob') || driftControlConfig?.analysis?.cloudformation_glob || '';
+    const costThreshold = core.getInput('cost_threshold') || driftControlConfig?.risk?.cost_threshold?.toString() || '1000';
+    const configYamlGlob = core.getInput('config_yaml_glob') || driftControlConfig?.analysis?.config_yaml_glob || '';
+    const featureFlagsPath = core.getInput('feature_flags_path') || driftControlConfig?.analysis?.feature_flags_path || '';
+    const vulnerabilityProvider = core.getInput('vulnerability_provider') || driftControlConfig?.vulnerability?.provider || 'static';
     
     // LLM configuration for enhanced explanations
-    const llmProvider = core.getInput('llm_provider');
-    const llmApiKey = core.getInput('llm_api_key');
-    const llmModel = core.getInput('llm_model');
-    const llmMaxTokens = parseInt(core.getInput('llm_max_tokens') || '150');
+    const llmProvider = core.getInput('llm_provider') || driftControlConfig?.llm?.provider || '';
+    const llmApiKey = core.getInput('llm_api_key') || '';
+    const llmModel = core.getInput('llm_model') || driftControlConfig?.llm?.model || '';
+    const llmMaxTokens = parseInt(core.getInput('llm_max_tokens') || driftControlConfig?.llm?.max_tokens?.toString() || '150');
     
     const llmConfig = llmProvider && llmApiKey ? {
       enabled: true,
@@ -53,23 +83,6 @@ async function run() {
       core.info(`LLM Provider: ${llmProvider} (Model: ${llmModel || 'default'})`);
     }
 
-    // Get GitHub context and authenticate
-    const token = core.getInput('token') || process.env.GITHUB_TOKEN;
-    if (!token) {
-      throw new Error('GITHUB_TOKEN is required');
-    }
-    
-    const octokit = github.getOctokit(token);
-    const context = github.context;
-    
-    // Check if this is a pull request event
-    if (!context.payload.pull_request) {
-      core.info('Not a pull request event, skipping drift detection');
-      return;
-    }
-    
-    const { owner, repo } = context.repo;
-    const pullNumber = context.payload.pull_request.number;
     
     core.info(`Analyzing PR #${pullNumber} in ${owner}/${repo}`);
     
@@ -89,7 +102,8 @@ async function run() {
     const sqlAnalyzer = new SqlAnalyzer(contentFetcher);
     const openApiAnalyzer = new OpenApiAnalyzer(contentFetcher);
     const iacAnalyzer = new IaCAnalyzer(contentFetcher);
-    const configAnalyzer = new ConfigAnalyzer(contentFetcher);
+    // ConfigAnalyzer already initialized above for config loading
+    configAnalyzer.contentFetcher = contentFetcher;
     
     // Initialize vulnerability provider before analysis
     await configAnalyzer.initializeVulnerabilityProvider(octokit, {
@@ -100,14 +114,6 @@ async function run() {
       headSha: context.payload.pull_request.head.sha
     });
     
-    // Load correlation configuration if provided
-    let correlationConfig = null;
-    if (correlationConfigPath) {
-      correlationConfig = await configAnalyzer.loadCorrelationConfig(octokit, owner, repo, context.payload.pull_request, correlationConfigPath);
-      if (correlationConfig.loaded) {
-        core.info(`Correlation config loaded with ${correlationConfig.correlationRules.length} rules`);
-      }
-    }
     
     // Detect OpenAPI spec file renames
     const { actualOpenApiPath, renamedFromPath } = openApiAnalyzer.detectSpecRenames(files, openApiPath);
