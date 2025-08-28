@@ -137,7 +137,7 @@ function analyzeStatement(stmt, sqlChanges, droppedTables, createdTables, droppe
       analyzeCreateStatement(stmt, createdTables);
       break;
     case 'alter':
-      analyzeAlterStatement(stmt, sqlChanges, droppedColumns, addedColumns);
+      analyzeAlterStatement(stmt, sqlChanges, droppedColumns, addedColumns, createdTables);
       break;
     case 'truncate':
       const tableName = extractTableName(stmt);
@@ -170,6 +170,14 @@ function analyzeDropStatement(stmt, sqlChanges, droppedTables, droppedColumns) {
     }
   } else if (keyword === 'constraint' && stmt.name) {
     sqlChanges.push(`DROP CONSTRAINT: ${stmt.name}`);
+  } else if (keyword === 'policy' && stmt.name) {
+    sqlChanges.push(`DROP POLICY: ${stmt.name}`);
+    core.info(`Found DROP POLICY: ${stmt.name}`);
+    // Extract table for correlation engine
+    if (stmt.on && stmt.on.table) {
+      droppedTables.add(stmt.on.table.toLowerCase());
+      core.info(`  on table: ${stmt.on.table}`);
+    }
   }
 }
 
@@ -183,11 +191,32 @@ function analyzeCreateStatement(stmt, createdTables) {
       createdTables.add(tableName.toLowerCase());
       core.info(`Found CREATE TABLE: ${tableName}`);
     }
+  } else if (keyword === 'policy') {
+    const policyName = stmt.name || 'unnamed';
+    sqlChanges.push(`CREATE POLICY: ${policyName}`);
+    core.info(`Found CREATE POLICY: ${policyName}`);
+    // Extract table for correlation engine
+    if (stmt.on && stmt.on.table) {
+      createdTables.add(stmt.on.table.toLowerCase());
+      core.info(`  on table: ${stmt.on.table}`);
+    }
   }
 }
 
 // Analyze ALTER statements
-function analyzeAlterStatement(stmt, sqlChanges, droppedColumns, addedColumns) {
+function analyzeAlterStatement(stmt, sqlChanges, droppedColumns, addedColumns, createdTables) {
+  // Handle ALTER POLICY (different structure than ALTER TABLE)
+  if (stmt.keyword?.toLowerCase() === 'policy' && stmt.name) {
+    sqlChanges.push(`ALTER POLICY: ${stmt.name}`);
+    core.info(`Found ALTER POLICY: ${stmt.name}`);
+    // Extract table for correlation engine
+    if (stmt.on && stmt.on.table && createdTables) {
+      createdTables.add(stmt.on.table.toLowerCase());
+      core.info(`  on table: ${stmt.on.table}`);
+    }
+    return; // ALTER POLICY doesn't follow the same structure as ALTER TABLE
+  }
+  
   const tableName = extractTableName(stmt);
   
   if (stmt.expr && Array.isArray(stmt.expr)) {
@@ -246,7 +275,9 @@ function fallbackRegexAnalysis(content, filename) {
     { pattern: /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?((?:[\w`"\[\]]+\.)?[\w`"\[\]]+)/gi, type: 'DROP TABLE' },
     { pattern: /DROP\s+COLUMN\s+([\w`"\[\]]+)/gi, type: 'DROP COLUMN' },
     { pattern: /TRUNCATE\s+TABLE\s+((?:[\w`"\[\]]+\.)?[\w`"\[\]]+)/gi, type: 'TRUNCATE TABLE' },
-    { pattern: /DROP\s+CONSTRAINT\s+([\w`"\[\]]+)/gi, type: 'DROP CONSTRAINT' }
+    { pattern: /DROP\s+CONSTRAINT\s+([\w`"\[\]]+)/gi, type: 'DROP CONSTRAINT' },
+    { pattern: /DROP\s+POLICY\s+(?:IF\s+EXISTS\s+)?([\w`"\[\]]+)\s+ON\s+([\w`"\[\]]+)/gi, type: 'DROP POLICY' },
+    { pattern: /ALTER\s+POLICY\s+([\w`"\[\]]+)\s+ON\s+([\w`"\[\]]+)/gi, type: 'ALTER POLICY' }
   ];
   
   const droppedTables = new Set();
@@ -274,6 +305,18 @@ function fallbackRegexAnalysis(content, filename) {
           droppedColumns.get(tableName).push(objectName);
           core.info(`Fallback mapped DROP COLUMN ${objectName} to table ${tableName}`);
         }
+      } else if (type === 'DROP POLICY') {
+        // Extract table from ON clause (match[2]) if present
+        if (match[2]) {
+          const tableName = match[2].replace(/[`"\[\]]/g, '');
+          droppedTables.add(tableName.toLowerCase());
+          core.info(`Fallback found DROP POLICY on table: ${tableName}`);
+        }
+      } else if (type === 'ALTER POLICY') {
+        // For ALTER POLICY, match[2] is the table name
+        const tableName = match[2].replace(/[`"\[\]]/g, '');
+        createdTables.add(tableName.toLowerCase()); // Use createdTables to ensure it's in entities
+        core.info(`Fallback found ALTER POLICY on table: ${tableName}`);
       }
       
       sqlChanges.push(`${type}: ${objectName}`);
@@ -286,6 +329,16 @@ function fallbackRegexAnalysis(content, filename) {
   while ((match = createTablePattern.exec(content)) !== null) {
     const tableName = match[1].replace(/[`"\[\]]/g, '');
     createdTables.add(tableName.toLowerCase());
+  }
+  
+  // Check for policy creations
+  const createPolicyPattern = /CREATE\s+POLICY\s+([\w`"\[\]]+)\s+ON\s+([\w`"\[\]]+)/gi;
+  while ((match = createPolicyPattern.exec(content)) !== null) {
+    const policyName = match[1].replace(/[`"\[\]]/g, '');
+    const tableName = match[2].replace(/[`"\[\]]/g, '');
+    sqlChanges.push(`CREATE POLICY: ${policyName}`);
+    createdTables.add(tableName.toLowerCase()); // For correlation engine
+    core.info(`Fallback found CREATE POLICY: ${policyName} on table ${tableName}`);
   }
   
   // Smart table rename detection

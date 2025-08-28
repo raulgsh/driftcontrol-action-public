@@ -319,6 +319,131 @@ describe('SqlAnalyzer', () => {
       expect(mockRiskScorer.scoreChanges).toHaveBeenCalledWith(expectedChanges, 'SQL');
     });
 
+    test('should detect DROP POLICY operations as high severity', async () => {
+      const files = [
+        { filename: 'migrations/003_drop_policy.sql', status: 'added' }
+      ];
+
+      mockOctokit.rest.repos.getContent.mockResolvedValueOnce({
+        data: { 
+          content: Buffer.from('DROP POLICY IF EXISTS user_isolation ON users;').toString('base64') 
+        }
+      });
+
+      mockRiskScorer.scoreChanges.mockReturnValue({
+        severity: 'high',
+        reasoning: ['Row-Level Security policy dropped']
+      });
+
+      const result = await sqlAnalyzer.analyzeSqlFiles(
+        files, mockOctokit, baseParams.owner, baseParams.repo, 
+        baseParams.pullRequestHeadSha, baseParams.sqlGlob
+      );
+
+      expect(result.driftResults).toHaveLength(1);
+      expect(result.driftResults[0].changes).toContain('DROP POLICY: user_isolation');
+      expect(result.driftResults[0].entities).toContain('users'); // Validates table extraction
+      expect(result.driftResults[0].severity).toBe('high');
+      expect(mockRiskScorer.scoreChanges).toHaveBeenCalledWith(['DROP POLICY: user_isolation'], 'SQL');
+    });
+
+    test('should detect ALTER POLICY operations as high severity', async () => {
+      const files = [
+        { filename: 'migrations/004_alter_policy.sql', status: 'added' }
+      ];
+
+      mockOctokit.rest.repos.getContent.mockResolvedValueOnce({
+        data: { 
+          content: Buffer.from('ALTER POLICY user_isolation ON users USING (tenant_id = current_user_id());').toString('base64') 
+        }
+      });
+
+      mockRiskScorer.scoreChanges.mockReturnValue({
+        severity: 'high',
+        reasoning: ['Row-Level Security policy altered']
+      });
+
+      const result = await sqlAnalyzer.analyzeSqlFiles(
+        files, mockOctokit, baseParams.owner, baseParams.repo, 
+        baseParams.pullRequestHeadSha, baseParams.sqlGlob
+      );
+
+      expect(result.driftResults).toHaveLength(1);
+      expect(result.driftResults[0].changes).toContain('ALTER POLICY: user_isolation');
+      expect(result.driftResults[0].entities).toContain('users'); // Validates correlation capability
+      expect(result.driftResults[0].severity).toBe('high');
+      expect(mockRiskScorer.scoreChanges).toHaveBeenCalledWith(['ALTER POLICY: user_isolation'], 'SQL');
+    });
+
+    test('should detect CREATE POLICY operations as medium severity', async () => {
+      const files = [
+        { filename: 'migrations/005_create_policy.sql', status: 'added' }
+      ];
+
+      mockOctokit.rest.repos.getContent.mockResolvedValueOnce({
+        data: { 
+          content: Buffer.from('CREATE POLICY tenant_isolation ON orders FOR ALL USING (tenant_id = current_tenant());').toString('base64') 
+        }
+      });
+
+      mockRiskScorer.scoreChanges.mockReturnValue({
+        severity: 'medium',
+        reasoning: ['New Row-Level Security policy created']
+      });
+
+      const result = await sqlAnalyzer.analyzeSqlFiles(
+        files, mockOctokit, baseParams.owner, baseParams.repo, 
+        baseParams.pullRequestHeadSha, baseParams.sqlGlob
+      );
+
+      expect(result.driftResults).toHaveLength(1);
+      expect(result.driftResults[0].changes).toContain('CREATE POLICY: tenant_isolation');
+      expect(result.driftResults[0].entities).toContain('orders'); // Validates correlation engine integration
+      expect(result.driftResults[0].severity).toBe('medium');
+      expect(mockRiskScorer.scoreChanges).toHaveBeenCalledWith(['CREATE POLICY: tenant_isolation'], 'SQL');
+    });
+
+    test('should detect RLS policy operations via regex fallback', async () => {
+      const files = [
+        { filename: 'migrations/006_complex_policy.sql', status: 'added' }
+      ];
+
+      // Complex SQL that might not parse with AST but should work with regex
+      const complexSQL = `
+        -- Complex policy statement that might not parse perfectly
+        DROP POLICY IF EXISTS old_tenant_policy ON user_data;
+        CREATE POLICY new_tenant_policy ON user_data 
+          FOR ALL USING (
+            user_tenant = get_current_tenant() AND 
+            status != 'deleted'
+          ) WITH CHECK (user_tenant = get_current_tenant());
+      `;
+
+      mockOctokit.rest.repos.getContent.mockResolvedValueOnce({
+        data: { 
+          content: Buffer.from(complexSQL).toString('base64') 
+        }
+      });
+
+      mockRiskScorer.scoreChanges.mockReturnValue({
+        severity: 'high',
+        reasoning: ['RLS policy operations detected']
+      });
+
+      const result = await sqlAnalyzer.analyzeSqlFiles(
+        files, mockOctokit, baseParams.owner, baseParams.repo, 
+        baseParams.pullRequestHeadSha, baseParams.sqlGlob
+      );
+
+      expect(result.driftResults).toHaveLength(1);
+      const changes = result.driftResults[0].changes;
+      expect(changes).toEqual(expect.arrayContaining([
+        expect.stringMatching(/DROP POLICY: old_tenant_policy/),
+        expect.stringMatching(/CREATE POLICY: new_tenant_policy/)
+      ]));
+      expect(result.driftResults[0].entities).toContain('user_data');
+    });
+
     test('should handle file read errors gracefully', async () => {
       const files = [
         { filename: 'migrations/001_error.sql', status: 'added' }

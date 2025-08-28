@@ -6,6 +6,7 @@
 function assessHighSeverity(changeType, details) {
   const highRiskIndicators = [
     'DROP TABLE', 'DROP COLUMN', 'TRUNCATE TABLE', 'DROP CONSTRAINT',
+    'DROP POLICY', 'ALTER POLICY', // RLS policy changes are high risk
     'COLUMN LOSS', 'API_DELETION', 'BREAKING_CHANGE',
     'SECURITY_GROUP_DELETION', 'RESOURCE_DELETION',
     'SECRET_KEY_REMOVED', 'SECRET_KEY_ADDED',
@@ -40,6 +41,7 @@ function assessHighSeverity(changeType, details) {
 function assessMediumSeverity(changeType, details) {
   const mediumRiskIndicators = [
     'TYPE NARROWING', 'NOT NULL', 'REQUIRED', 'COLUMN RENAME',
+    'CREATE POLICY', // New RLS policies need review
     'BREAKING CHANGE', 'ADD CONSTRAINT', 'API_EXPANSION',
     'SECURITY_GROUP_CHANGE', 'COST_INCREASE', 'RESOURCE_DELETION_POLICY',
     'FEATURE_FLAG_', 'CONTAINER_REMOVED', 'DEPENDENCY_REMOVED',
