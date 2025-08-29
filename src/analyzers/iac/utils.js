@@ -490,10 +490,20 @@ function analyzeResourceChanges(baseMap, headMap, getResourceType, isSecurityRes
       const change = headResource.change || {};
       const actions = change.actions || [];
       
-      if (actions.includes('update') || actions.includes('modify') || baseType !== resourceType) {
+      // Check if we should perform property comparison
+      // For Terraform: check for update/modify actions
+      // For CloudFormation: always compare if both base and head have Properties
+      const shouldCompare = actions.includes('update') || 
+                           actions.includes('modify') || 
+                           baseType !== resourceType ||
+                           (baseResource.Properties && headResource.Properties);
+      
+      if (shouldCompare) {
         // Extract before and after states for comparison
-        const beforeState = change.before || baseResource.change?.after || baseResource.Properties || {};
-        const afterState = change.after || headResource.Properties || {};
+        // For Terraform: use change.before/after states
+        // For CloudFormation: use Properties directly
+        const beforeState = change.before || baseResource.change?.after || baseResource.Properties || baseResource;
+        const afterState = change.after || headResource.Properties || headResource;
         
         // Perform detailed property comparison
         const propertyChanges = compareResourceProperties(

@@ -81,7 +81,7 @@ correlation_rules:
       expect(result.loaded).toBe(false);
       expect(result.correlationRules).toEqual([]);
       expect(core.info).toHaveBeenCalledWith(
-        'No correlation config found at .github/driftcontrol.yml in any branch - using heuristic correlation only'
+        'No DriftControl config found at .github/driftcontrol.yml in any branch - using defaults'
       );
     });
     
